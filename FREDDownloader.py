@@ -14,11 +14,10 @@ _HEADERS = {"User-Agent": API.user_agent}
 
 # Series to download: (series_id, filename, description)
 SERIES = [
-    # CPI
+    # CPI & PCE
     ("CPIAUCSL",         "cpi_all_items.csv",            "CPI All Urban Consumers: All Items"),
     ("CPILFESL",         "cpi_core.csv",                 "CPI All Urban Consumers: Less Food & Energy"),
-    # Inflation (annual % change)
-    ("FPCPITOTLZGUSA",   "inflation_annual_pct.csv",     "Inflation, Consumer Prices for United States (Annual %)"),
+    ("PCEPILFE",         "pce_core.csv",                 "PCE Price Index Excluding Food & Energy (Core PCE — Fed's preferred measure)"),
     # Money Supply
     ("M1SL",             "money_supply_m1.csv",          "M1 Money Stock"),
     ("M2SL",             "money_supply_m2.csv",          "M2 Money Stock"),
@@ -27,15 +26,57 @@ SERIES = [
     ("VIXCLS",           "vix_volatility.csv",           "CBOE Volatility Index (VIX)"),
     ("DGS10",            "treasury_yield_10y_daily.csv", "10-Year Treasury Constant Maturity Rate (Daily)"),
     ("GS10",             "treasury_yield_10y_monthly.csv","Market Yield on 10-Year Treasury Securities (Monthly)"),
-    # Real Estate
-    ("DRCRELEXFACBS",    "cre_delinquency_rate.csv",     "Delinquency Rate on Commercial Real Estate Loans (ex Farmland)"),
+    # Real Estate / Lending Standards
+    ("SUBLPDRCSN",          "cre_lending_standards.csv",    "Net % Domestic Banks Tightening Standards for CRE Loans — Nonfarm Nonresidential (SLOOS)"),
     # Fiscal
     ("GFDEGDQ188S",      "federal_debt_pct_gdp.csv",     "Federal Debt: Total Public Debt as Percent of GDP"),
+    ("GFDEBTN",          "federal_debt_total.csv",       "Federal Debt: Total Public Debt (Billions of Dollars, Monthly)"),
     # Employment / Labor
     ("UNRATE",           "unemployment_rate.csv",        "Unemployment Rate"),
+    ("ICSA",             "initial_jobless_claims.csv",   "Initial Claims for Unemployment Insurance (Weekly)"),
+    ("PSAVERT",          "personal_savings_rate.csv",    "Personal Saving Rate (%)"),
+    ("INDPRO",           "industrial_production.csv",    "Industrial Production Index"),
     ("EMRATIO",          "employment_population_ratio.csv", "Employment-Population Ratio"),
     ("CIVPART",          "labor_force_participation.csv","Civilian Labor Force Participation Rate"),
     ("PAYEMS",           "nonfarm_payrolls.csv",         "All Employees: Total Nonfarm Payrolls"),
+    # ── Liquidity & Funding Stress ────────────────────────────────────────
+    ("STLFSI4",          "stlfsi4.csv",                  "St. Louis Fed Financial Stress Index"),
+    ("DCPF3M",           "cp_3m_financial.csv",          "3-Month AA Financial Commercial Paper Rate (Discount Basis)"),
+    ("DGS3MO",           "treasury_3m.csv",              "3-Month Treasury Constant Maturity Rate"),
+    ("SOFR",             "sofr_rate.csv",                "Secured Overnight Financing Rate"),
+    ("RRPONTSYD",        "rrp_usage.csv",                "Overnight Reverse Repurchase Agreements: Treasury Securities Sold by Fed"),
+    # ── Credit Markets ────────────────────────────────────────────────────
+    ("BAMLH0A0HYM2",     "hy_spread.csv",                "ICE BofA US High Yield Index Option-Adjusted Spread"),
+    ("BAMLC0A0CM",       "ig_spread.csv",                "ICE BofA US Corporate Master Option-Adjusted Spread (IG)"),
+    ("DRCCLACBS",        "cc_delinquency_rate.csv",      "Delinquency Rate on Credit Card Loans, All Commercial Banks"),
+    # ── Policy Constraints ────────────────────────────────────────────────
+    ("WALCL",            "fed_balance_sheet.csv",        "Federal Reserve: Total Assets (Balance Sheet)"),
+    ("FEDFUNDS",         "fed_funds_rate.csv",           "Federal Funds Effective Rate"),
+    ("T5YIE",            "inflation_exp_5y.csv",         "5-Year Breakeven Inflation Rate"),
+    ("T10YIE",           "inflation_exp_10y.csv",        "10-Year Breakeven Inflation Rate"),
+    # ── Fiscal Maneuverability ────────────────────────────────────────────
+    ("A091RC1Q027SBEA",  "federal_interest_payments.csv","Federal Government: Interest Payments (Quarterly SAAR)"),
+    ("W006RC1Q027SBEA",  "federal_current_receipts.csv", "Federal Government: Current Receipts (Quarterly SAAR)"),
+    ("GDP",              "nominal_gdp.csv",              "Gross Domestic Product, Nominal (Quarterly SAAR)"),
+    # ── Financial Conditions & Regime ─────────────────────────────────────
+    ("NFCI",             "nfci.csv",                     "Chicago Fed National Financial Conditions Index"),
+    ("NFCICREDIT",       "nfci_credit.csv",              "Chicago Fed NFCI: Credit Subindex"),
+    # ── Recession Reference ───────────────────────────────────────────────
+    ("USREC",            "us_recession.csv",             "NBER Recession Indicator (1=Recession, 0=Expansion)"),
+    # ── Yield Curve ───────────────────────────────────────────────────────
+    ("T10Y2Y",           "yield_curve_spread.csv",       "10-Year minus 2-Year Treasury Yield Spread"),
+    # ── Bank Lending Standards ────────────────────────────────────────────
+    ("DRTSCILM",         "bank_lending_standards.csv",   "Net % Banks Tightening C&I Loan Standards (Large & Medium Firms)"),
+    # ── Leading Indicators ────────────────────────────────────────────────────
+    ("USSLIND",          "leading_economic_index.csv",   "Conference Board Leading Economic Index (MoM % Change)"),
+    # ── Recession Probability ─────────────────────────────────────────────
+    ("RECPROUSM156N",    "recession_probability.csv",    "NY Fed Recession Probability: 12-Month Ahead"),
+    # ── Housing ───────────────────────────────────────────────────────────
+    ("MORTGAGE30US",     "mortgage_rate_30y.csv",        "30-Year Fixed Rate Mortgage Average"),
+    ("HOUST",            "housing_starts.csv",           "Housing Starts: Total New Privately Owned Units (Thousands, SAAR)"),
+    ("CSUSHPINSA",       "case_shiller_hpi.csv",         "S&P/Case-Shiller U.S. National Home Price Index"),
+    # ── Dollar ────────────────────────────────────────────────────────────
+    ("DTWEXBGS",         "dollar_index.csv",             "Nominal Broad U.S. Dollar Index (Trade Weighted, Goods)"),
 ]
 
 
