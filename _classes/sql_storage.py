@@ -139,6 +139,10 @@ class SQLStorage:
         if df is None or df.empty:
             return 0
 
+        # Deduplicate by date — keep last value if the source has duplicates
+        # (e.g. daily data with two readings in the same month after resampling)
+        df = df[~df.index.duplicated(keep="last")]
+
         records = [
             {"series_id": series_id,
              "date":      idx.date() if hasattr(idx, "date") else idx,

@@ -22,6 +22,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 class _Paths:
     root:    str = _ROOT
     data:    str = os.path.join(_ROOT, "data")
+    reports: str = os.path.join(_ROOT, "reports")
     config:  str = os.path.join(_ROOT, "config.ini")
 
 PATHS = _Paths()
