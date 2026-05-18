@@ -32,11 +32,14 @@ class DataLoader:
     # ── Discovery ──────────────────────────────────────────────────────────
 
     def _scan(self):
-        """Identify available series from SQL (preferred) or CSV files."""
+        """Identify available series from SQL (preferred) or CSV files.
+
+        In SQL mode, CSV files in the data directory act as a fallback for any
+        series not yet present in the database (e.g. newly added series).
+        """
         if self._sql is not None:
             for sid in self._sql.list_series():
                 self.available[sid] = _SQL_SENTINEL
-            return
 
         if not os.path.isdir(self.data_dir):
             return
@@ -48,7 +51,8 @@ class DataLoader:
                 sid = _FILENAME_TO_ID[fname]
             else:
                 sid = fname.replace(".csv", "").upper().replace("-", "_")
-            self.available[sid] = path
+            if sid not in self.available:   # SQL entry takes precedence
+                self.available[sid] = path
 
     # ── Loading & Caching ──────────────────────────────────────────────────
 

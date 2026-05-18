@@ -35,16 +35,182 @@ class RiskEngine:
                 return level
         return "neutral"
 
+    # ── Statistical Scoring ────────────────────────────────────────────────
+
+    def _historical_values(self, series_id: str, window_years: int = 20) -> pd.Series:
+        """
+        Return a Series of scored values (level / yoy / mom_change) within the
+        calibration window.  Used by percentile and z-score scorers.
+        """
+        meta = REGISTRY.get(series_id)
+        if not meta:
+            return pd.Series(dtype=float)
+        df = self.dl.load(series_id)
+        if df is None or df.empty:
+            return pd.Series(dtype=float)
+        basis = meta.get("risk_basis", "level")
+        try:
+            monthly = df.resample("ME").last().dropna()
+        except ValueError:
+            monthly = df.resample("M").last().dropna()
+        if basis == "yoy":
+            values = (monthly.pct_change(12) * 100).dropna()
+        elif basis == "mom_change":
+            values = monthly.diff().dropna()
+        else:
+            values = monthly
+        if values.empty:
+            return pd.Series(dtype=float)
+        cutoff = values.index[-1] - pd.DateOffset(years=window_years)
+        values = values[values.index >= cutoff]
+        return values.iloc[:, 0].dropna()
+
+    def _percentile_score(self, series_id: str, value: float,
+                          window_years: int = 20) -> str:
+        """
+        Score by percentile rank within the calibration window distribution.
+
+        higher_is_bad=True:  green < 75th pctile, yellow 75–90th, red ≥ 90th
+        higher_is_bad=False: green > 25th pctile, yellow 10–25th, red ≤ 10th
+
+        Falls back to fixed thresholds when fewer than 24 historical observations
+        are available.
+        """
+        meta = REGISTRY.get(series_id, {})
+        hist = self._historical_values(series_id, window_years)
+        if len(hist) < 24:
+            return self.score_value(series_id, value)
+        pct = float((hist < value).sum()) / len(hist) * 100
+        if meta.get("higher_is_bad", True):
+            if pct >= 90:
+                return "red"
+            if pct >= 75:
+                return "yellow"
+            return "green"
+        else:
+            if pct <= 10:
+                return "red"
+            if pct <= 25:
+                return "yellow"
+            return "green"
+
+    def _zscore_score(self, series_id: str, value: float,
+                      window_years: int = 20) -> str:
+        """
+        Score by z-score relative to the calibration window distribution.
+
+        |signed_z| ≥ 2.0 → red, ≥ 1.0 → yellow, < 1.0 → green
+        (signed so that the direction of concern drives the sign)
+
+        Falls back to fixed thresholds when distribution is degenerate or
+        fewer than 24 observations are available.
+        """
+        meta = REGISTRY.get(series_id, {})
+        hist = self._historical_values(series_id, window_years)
+        if len(hist) < 24:
+            return self.score_value(series_id, value)
+        mean, std = hist.mean(), hist.std()
+        if std == 0:
+            return "neutral"
+        signed_z = (value - mean) / std
+        if not meta.get("higher_is_bad", True):
+            signed_z = -signed_z
+        if signed_z >= 2.0:
+            return "red"
+        if signed_z >= 1.0:
+            return "yellow"
+        return "green"
+
+    def confidence_score(self, series_id: str) -> float:
+        """
+        Composite confidence score 0–100 for a given indicator.
+
+        Components (weights):
+          timeliness         25% — recency relative to expected update frequency
+          coverage           20% — years of history available (full credit at 20+)
+          predictive_reliability  35% — literature-based signal reliability (registry)
+          revision_risk      20% — penalty for heavily revised releases (registry)
+        """
+        meta = REGISTRY.get(series_id)
+        if not meta:
+            return 0.0
+
+        _, date = self.dl.get_latest(series_id)
+        if date is None:
+            timeliness = 0.0
+        else:
+            days_stale = (pd.Timestamp.today() - pd.Timestamp(date)).days
+            max_lag = {"Daily": 5, "Weekly": 14, "Monthly": 60,
+                       "Quarterly": 120}.get(meta.get("frequency", "Monthly"), 60)
+            timeliness = max(0.0, 1.0 - days_stale / max_lag)
+
+        df = self.dl.load(series_id)
+        coverage = 0.0
+        if df is not None and not df.empty:
+            years = (df.index[-1] - df.index[0]).days / 365.25
+            coverage = min(1.0, years / 20.0)
+
+        reliability = meta.get("predictive_reliability", 0.5)
+        revision_score = {"low": 1.0, "medium": 0.75, "high": 0.50}.get(
+            meta.get("revision_risk", "medium"), 0.75
+        )
+
+        composite = (0.25 * timeliness + 0.20 * coverage
+                     + 0.35 * reliability + 0.20 * revision_score)
+        return round(composite * 100, 1)
+
+    def score_label(self, series_id: str, risk_level: str) -> str:
+        """
+        Return a statistically grounded label for a risk level, tailored to the
+        normalization method declared in the registry.
+
+          fixed_thresholds   → Within Range / Elevated / Stressed
+          percentile         → <75th Pctile / 75–90th Pctile / >90th Pctile
+                               (reversed when higher_is_bad=False)
+          zscore             → Within 1σ / 1–2σ Elevated / Beyond 2σ
+          standardized_index → Below Average / Above Average / High Stress
+        """
+        if risk_level == "neutral":
+            return "No Data"
+        meta = REGISTRY.get(series_id, {})
+        method = meta.get("normalization_method", "fixed_thresholds")
+        higher_is_bad = meta.get("higher_is_bad", True)
+
+        if method == "percentile":
+            if higher_is_bad:
+                return {"green": "<75th Pctile", "yellow": "75–90th Pctile",
+                        "red": ">90th Pctile"}.get(risk_level, risk_level)
+            return {"green": ">25th Pctile", "yellow": "10–25th Pctile",
+                    "red": "<10th Pctile"}.get(risk_level, risk_level)
+
+        if method == "zscore":
+            bad_dir = "Above" if higher_is_bad else "Below"
+            return {"green": "Within 1σ", "yellow": f"1–2σ {bad_dir} Avg",
+                    "red": "Beyond 2σ"}.get(risk_level, risk_level)
+
+        if method == "standardized_index":
+            return {"green": "Below Average", "yellow": "Above Average",
+                    "red": "High Stress"}.get(risk_level, risk_level)
+
+        # fixed_thresholds (default)
+        return {"green": "Within Range", "yellow": "Elevated",
+                "red": "Stressed"}.get(risk_level, risk_level)
+
     def score(self, series_id: str) -> tuple[str, str, float | None]:
         """
         Return (risk_level, formatted_display_string, raw_value) for a series.
-        The risk_basis in the registry determines which value is scored.
+
+        Routes to statistical scoring (percentile / zscore) when the registry
+        specifies normalization_method accordingly; otherwise uses fixed thresholds
+        or the standardized-index fixed thresholds unchanged.
         """
         meta = REGISTRY.get(series_id)
         if not meta:
             return "neutral", "N/A", None
 
         basis = meta.get("risk_basis", "level")
+        normalization = meta.get("normalization_method", "fixed_thresholds")
+        window = meta.get("calibration_window_years", 20)
 
         if basis == "yoy":
             value = self.dl.get_yoy(series_id)
@@ -53,7 +219,16 @@ class RiskEngine:
         else:
             value, _ = self.dl.get_latest(series_id)
 
-        risk = self.score_value(series_id, value)
+        if value is not None and not pd.isna(value):
+            if normalization == "percentile":
+                risk = self._percentile_score(series_id, value, window)
+            elif normalization == "zscore":
+                risk = self._zscore_score(series_id, value, window)
+            else:
+                risk = self.score_value(series_id, value)
+        else:
+            risk = "neutral"
+
         display = self._format(series_id, value, basis)
         return risk, display, value
 
@@ -552,7 +727,7 @@ class RiskEngine:
         if rrp_risk == "red":
             rrp_trend = self.dl.get_trend("RRPONTSYD", months=6)
             if rrp_trend == "falling":
-                triggers.append("Fed reverse repo near depletion and declining — systemic liquidity cushion thinning")
+                triggers.append("Fed reverse repo near depletion and declining — note: RRP drawdown can reflect reserve redistribution or MMF allocation shifts, not necessarily system-wide liquidity reduction")
 
         int_rec, _ = self.get_interest_receipts_ratio()
         if int_rec is not None:
@@ -724,6 +899,134 @@ class RiskEngine:
         if counts["yellow"] >= 1:
             return "yellow"
         return "green"
+
+    # ── Risk Taxonomy (4 clean categories) ────────────────────────────────
+
+    def risk_taxonomy(self) -> dict[str, dict]:
+        """
+        Four cleanly separated risk categories.  Unlike crisis_dimensions() which
+        mixes leading/lagging and cyclical/structural signals, this taxonomy
+        groups indicators by the mechanism they represent.
+
+        1. Cyclical Recession Risk  — leading macro-cycle signals
+        2. Financial Stability Risk — credit, funding, and systemic stress
+        3. Valuation & Sentiment    — equity valuations and implied volatility
+        4. Fiscal & Policy Risk     — fiscal sustainability and policy constraints
+        """
+        def composite(*levels):
+            return _RISK_FROM_INT[max(_RISK_ORDER.get(lv, 0) for lv in levels)]
+
+        # ── 1. Cyclical Recession Risk ─────────────────────────────────────
+        lei_r,  lei_d,  _ = self.score("USSLIND");      lei_ao  = self._as_of("USSLIND")
+        yc_r,   yc_d,   _ = self.score("T10Y2Y");       yc_ao   = self._as_of("T10Y2Y")
+        rec_r,  rec_d,  _ = self.score("RECPROUSM156N");rec_ao  = self._as_of("RECPROUSM156N")
+        icsa_r, icsa_d, _ = self.score("ICSA");         icsa_ao = self._as_of("ICSA")
+        ism_r,  ism_d,  _ = self.score("AMTMNO");       ism_ao  = self._as_of("AMTMNO")
+        pmt_r,  pmt_d,  _ = self.score("PERMIT");       pmt_ao  = self._as_of("PERMIT")
+
+        # ── 2. Financial Stability Risk ────────────────────────────────────
+        fsi_r,  fsi_d,  _ = self.score("STLFSI4");      fsi_ao  = self._as_of("STLFSI4")
+        nfci_r, nfci_d, _ = self.score("NFCI");         nfci_ao = self._as_of("NFCI")
+        hy_r,   hy_d,   _ = self.score("BAMLH0A0HYM2"); hy_ao   = self._as_of("BAMLH0A0HYM2")
+        ig_r,   ig_d,   _ = self.score("BAMLC0A0CM");   ig_ao   = self._as_of("BAMLC0A0CM")
+        lend_r, lend_d, _ = self.score("DRTSCILM");     lend_ao = self._as_of("DRTSCILM")
+        cre_r,  cre_d,  _ = self.score("SUBLPDRCSN");   cre_ao  = self._as_of("SUBLPDRCSN")
+        cp_r, cp_d, cp_ao = self.cp_treasury_spread()
+
+        # ── 3. Valuation & Sentiment Risk ─────────────────────────────────
+        cape_r, cape_d, _ = self.score("SP500_CAPE");   cape_ao = self._as_of("SP500_CAPE")
+        pe_r,   pe_d,   _ = self.score("SP500_PE");     pe_ao   = self._as_of("SP500_PE")
+        vix_r,  vix_d,  _ = self.score("VIXCLS");       vix_ao  = self._as_of("VIXCLS")
+
+        # ── 4. Fiscal & Policy Risk ────────────────────────────────────────
+        debt_r, debt_d, _ = self.score("GFDEGDQ188S");  debt_ao = self._as_of("GFDEGDQ188S")
+        t5_r,   t5_d,   _ = self.score("T5YIE");        t5_ao   = self._as_of("T5YIE")
+        t10_r,  t10_d,  _ = self.score("T10YIE");       t10_ao  = self._as_of("T10YIE")
+        int_rec, int_rec_date = self.get_interest_receipts_ratio()
+        ir_d = f"{int_rec:.1f}%" if int_rec is not None else "N/A"
+        ir_ao = (int_rec_date.strftime(DASH.date_display_fmt)
+                 if int_rec_date is not None else "")
+        if int_rec is None:     ir_r = "neutral"
+        elif int_rec < 12:      ir_r = "green"
+        elif int_rec < 20:      ir_r = "yellow"
+        else:                   ir_r = "red"
+        real_ff = self.get_real_fed_funds_rate()
+        ff_d = f"{real_ff:.1f}%" if real_ff is not None else "N/A"
+        ff_ao = self._as_of("FEDFUNDS")
+        if real_ff is None:    ff_r = "neutral"
+        elif real_ff < -1:     ff_r = "yellow"
+        elif real_ff <= 4:     ff_r = "green"
+        else:                  ff_r = "yellow"
+
+        return {
+            "Cyclical Recession Risk": {
+                "score": composite(lei_r, yc_r, rec_r, icsa_r, ism_r),
+                "components": [
+                    ("Leading Econ Index",  lei_r,  lei_d,  lei_ao),
+                    ("Yield Curve (10Y-2Y)",yc_r,   yc_d,   yc_ao),
+                    ("NY Fed Rec. Prob.",   rec_r,  rec_d,  rec_ao),
+                    ("Initial Claims",      icsa_r, icsa_d, icsa_ao),
+                    ("ISM New Orders",      ism_r,  ism_d,  ism_ao),
+                    ("Building Permits",    pmt_r,  pmt_d,  pmt_ao),
+                ],
+                "description": (
+                    "Aggregates leading macro-cycle signals that have historically "
+                    "peaked 3–18 months before recession onset: the Conference Board LEI, "
+                    "yield curve slope, NY Fed model probability, jobless claims, "
+                    "ISM manufacturing new orders, and building permits."
+                ),
+            },
+            "Financial Stability Risk": {
+                "score": composite(fsi_r, hy_r, ig_r, lend_r, cp_r, nfci_r),
+                "components": [
+                    ("Financial Stress Index",   fsi_r,  fsi_d,  fsi_ao),
+                    ("Nat'l Financial Cond.",    nfci_r, nfci_d, nfci_ao),
+                    ("High Yield Spread",        hy_r,   hy_d,   hy_ao),
+                    ("Investment Grade Spread",  ig_r,   ig_d,   ig_ao),
+                    ("C&I Lending Standards",    lend_r, lend_d, lend_ao),
+                    ("CRE Lending Standards",    cre_r,  cre_d,  cre_ao),
+                    ("CP-Treasury Spread",       cp_r,   cp_d,   cp_ao),
+                ],
+                "description": (
+                    "Credit, funding, and systemic stress indicators independent of the "
+                    "macro cycle. Financial stress can emerge without recession risk, and "
+                    "vice versa. Persistent deterioration here impairs the system's "
+                    "ability to self-stabilize when shocks arrive."
+                ),
+            },
+            "Valuation & Sentiment Risk": {
+                "score": composite(cape_r, pe_r, vix_r),
+                "components": [
+                    ("CAPE (Shiller P/E)",  cape_r, cape_d, cape_ao),
+                    ("Trailing P/E",        pe_r,   pe_d,   pe_ao),
+                    ("VIX",                 vix_r,  vix_d,  vix_ao),
+                ],
+                "description": (
+                    "Equity market valuations and implied volatility. Elevated valuations "
+                    "reduce the margin of safety (not a recession predictor) while "
+                    "compressed VIX alongside stretched CAPE indicates valuations are "
+                    "stretched relative to near-term risk pricing — associated with "
+                    "elevated long-run drawdown risk, but not a reliable short-term "
+                    "timing signal."
+                ),
+            },
+            "Fiscal & Policy Risk": {
+                "score": composite(debt_r, ir_r, t5_r, t10_r),
+                "components": [
+                    ("Federal Debt / GDP",       debt_r, debt_d, debt_ao),
+                    ("Interest / Gov't Receipts",ir_r,   ir_d,   ir_ao),
+                    ("5-Yr Infl. Expectations",  t5_r,   t5_d,   t5_ao),
+                    ("10-Yr Infl. Expectations", t10_r,  t10_d,  t10_ao),
+                    ("Real Fed Funds Rate",       ff_r,   ff_d,   ff_ao),
+                ],
+                "description": (
+                    "Fiscal sustainability and monetary policy constraints. High debt "
+                    "service plus unanchored inflation expectations simultaneously "
+                    "constrain both fiscal and monetary stabilization tools — the "
+                    "combination that historically produces the most severe outcomes."
+                ),
+            },
+        }
 
     # ── Formatting ─────────────────────────────────────────────────────────
 

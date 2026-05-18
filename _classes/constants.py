@@ -131,7 +131,7 @@ PALETTE: dict[str, str] = {
 # Each level provides bg/text/border colors and a human label.
 
 RISK_STYLE: dict[str, dict[str, str]] = {
-    "green":   {"bg": "#f0fff4", "text": "#276749", "border": "#68d391", "label": "Normal"},
+    "green":   {"bg": "#f0fff4", "text": "#276749", "border": "#68d391", "label": "Within Range"},
     "yellow":  {"bg": "#fffff0", "text": "#975a16", "border": "#f6ad55", "label": "Elevated"},
     "red":     {"bg": "#fff5f5", "text": "#9b2c2c", "border": "#fc8181", "label": "Stressed"},
     "neutral": {"bg": "#f7fafc", "text": "#4a5568", "border": "#cbd5e0", "label": "No Data"},
