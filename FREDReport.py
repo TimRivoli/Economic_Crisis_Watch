@@ -38,11 +38,32 @@ from _classes.chart_factory import (
     line_chart, area_chart, multi_line_chart, bar_change_chart,
     percentile_chart, dual_axis_chart, derived_ratio_chart, derived_spread_chart,
     walcl_pct_gdp_chart, real_rate_chart, yield_spread_chart, risk_heatmap_chart,
+    bci_chart, bci_waterfall_chart, momentum_chart, backtest_signal_chart,
+    recession_gauge_chart, recession_probability_chart, signal_decomposition_chart,
+    jolts_chart, wage_productivity_chart, u3_u6_chart,
+    labor_deterioration_chart, claims_dashboard_chart,
+    inflation_multi_chart, inflation_expectations_chart,
+    shelter_decomposition_chart, sticky_flexible_chart,
+    fci_composite_chart, hy_spread_fci_chart,
+    delinquency_chart, bank_deposits_chart,
+    central_bank_rates_chart, commodity_chart, fx_chart,
+    regime_timeline_chart, regime_scores_chart,
+    output_gap_chart, productivity_chart, real_rates_chart,
+    debt_service_chart, primary_balance_chart,
+    debt_trajectory_chart, fiscal_impulse_chart,
 )
+from _classes.leading_indicators import LeadingIndicatorEngine, BCI_COMPONENTS
+from _classes.recession_probability import RecessionProbabilityEngine, HORIZONS as RPE_HORIZONS
+from _classes.labor_analytics import LaborAnalyticsEngine
+from _classes.inflation_analysis import InflationAnalysisEngine
+from _classes.global_macro import GlobalMacroEngine
+from _classes.regime_engine import RegimeEngine, REGIMES as MACRO_REGIMES
+from _classes.structural_macro import StructuralMacroEngine
+from _classes.fiscal_analytics import FiscalAnalyticsEngine
 from _classes.risk_engine import RiskEngine
 from _classes.series_registry import REGISTRY, CATEGORY_LABELS, CATEGORY_ORDER
 from _classes.constants import PATHS, PALETTE as C, CHART, DASH, RISK_STYLE
-#from _classes.GoogleAPI import GoogleAPIUploadFile
+from _classes.GoogleAPI import GoogleAPIUploadFile
 
 
 # ── Page geometry ─────────────────────────────────────────────────────────────
@@ -74,6 +95,8 @@ CATEGORY_TO_ANCHOR = {
     "liquidity_stress": "sec_liquidity",
     "credit_markets":   "sec_credit",
     "policy_flex":      "sec_policy",
+    "global_macro":     "sec_global_macro",
+    "structural":       "sec_structural",
 }
 
 # ── Chart event annotations (used on long-history charts) ─────────────────
@@ -128,14 +151,21 @@ def _risk_clrs(level: str):
 
 
 def _fig_to_image(fig, display_w: float, w_px: int, h_px: int) -> Image:
-    try:
-        png = pio.to_image(fig, format="png", width=w_px, height=h_px, scale=1)
-    except Exception as exc:
-        print(f"  [warn] chart render failed: {exc}")
-        return Spacer(display_w, display_w * h_px / w_px)
-    buf = io.BytesIO(png)
-    return Image(buf, width=display_w, height=display_w * h_px / w_px)
-
+	try:
+		png = pio.to_image(fig, format="png", width=w_px, height=h_px, scale=1)
+	except Exception as exc:
+		print(f"  [warn] chart render failed: {exc}")
+		return Spacer(display_w, display_w * h_px / w_px)
+	max_height = 5.5 * inch
+	height = display_w * h_px / w_px				
+	if height > max_height:
+		print(f"Display size: {display_w} x {height}")
+		scale = max_height / height
+		display_w *= scale
+		height = max_height
+		print(f"Scaled to size: {display_w} x {height}")
+	buf = io.BytesIO(png)
+	return Image(buf, width=display_w, height=height)
 
 def _full_chart(fig) -> Image:
     return _fig_to_image(fig, CONTENT_W, FULL_W_PX, FULL_H_PX)
@@ -171,6 +201,37 @@ class _BookmarkFlowable(Flowable):
     def draw(self):
         self.canv.bookmarkPage(self.key)
         self.canv.addOutlineEntry(self.title, self.key, level=self.level, closed=False)
+
+
+class _ConfBar(Flowable):
+    """
+    Mini horizontal confidence-score bar for KPI cards.
+    Draws a thin filled track + "conf XX/100" label using vector primitives.
+    Works with any ReportLab font — no Unicode block characters required.
+    """
+    def __init__(self, score: float, avail_w: float,
+                 fill: colors.Color, empty: colors.Color, text: colors.Color):
+        super().__init__()
+        self.score  = score
+        self.width  = avail_w
+        self.fill   = fill
+        self.empty  = empty
+        self.text   = text
+        self.height = 8
+
+    def draw(self):
+        bar_w  = self.width * 0.40
+        bar_h  = 3.0
+        y      = (self.height - bar_h) / 2
+        self.canv.setFillColor(self.empty)
+        self.canv.rect(0, y, bar_w, bar_h, fill=1, stroke=0)
+        fill_w = bar_w * min(1.0, max(0.0, self.score / 100))
+        if fill_w > 0:
+            self.canv.setFillColor(self.fill)
+            self.canv.rect(0, y, fill_w, bar_h, fill=1, stroke=0)
+        self.canv.setFont("Helvetica", 6.5)
+        self.canv.setFillColor(self.text)
+        self.canv.drawString(bar_w + 3, y - 0.5, f"conf  {self.score:.0f}/100")
 
 
 def _section_rule(title: str, anchor_id: str | None = None, level: int = 0) -> list:
@@ -209,18 +270,32 @@ def _subsection(title: str) -> Paragraph:
     return Paragraph(title, ST_SUBSECT)
 
 
-def _half_table(left_items: list, right_items: list) -> Table:
-    """Two-column prose layout."""
-    t = Table([[left_items, right_items]], colWidths=[HALF_W, HALF_W])
+
+def _half_table(left_items, right_items):
+    rows = []
+    max_len = max(len(left_items), len(right_items))
+    for i in range(max_len):
+        left = left_items[i] if i < len(left_items) else Spacer(1,1)
+        right = right_items[i] if i < len(right_items) else Spacer(1,1)
+        rows.append([left, right])
+    t = Table(rows, colWidths=[HALF_W, HALF_W], splitByRow=1)
     t.setStyle(TableStyle([
-        ("VALIGN",      (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING",  (0, 0), (0, -1), 0),
-        ("RIGHTPADDING", (0, 0), (0, -1), 6),
-        ("LEFTPADDING",  (1, 0), (1, -1), 6),
-        ("RIGHTPADDING", (1, 0), (1, -1), 0),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("LEFTPADDING", (0,0), (-1,-1), 0),
+        ("RIGHTPADDING", (0,0), (-1,-1), 6),
     ]))
     return t
-
+	
+# def _half_table(left_items: list, right_items: list) -> Table:
+    # t = Table([[left_items, right_items]], colWidths=[HALF_W, HALF_W], splitByRow=1)
+    # t.setStyle(TableStyle([
+        # ("VALIGN", (0,0), (-1,-1), "TOP"),
+        # ("LEFTPADDING", (0,0), (0,-1), 0),
+        # ("RIGHTPADDING", (0,0), (0,-1), 6),
+        # ("LEFTPADDING", (1,0), (1,-1), 6),
+        # ("RIGHTPADDING", (1,0), (1,-1), 0),
+    # ]))
+    # return t
 
 # ── KPI Card ──────────────────────────────────────────────────────────────────
 
@@ -252,15 +327,25 @@ def _kpi_card(series_id: str, re: RiskEngine, dl) -> Table:
     basis_markup = f'  <font size="8">{basis_label}</font>' if basis_label else ""
     display_with_arrow = f'{display} <font size="10">{arrow}</font>{basis_markup}'
 
+    conf_score = re.confidence_score(series_id)
+    conf_bar = _ConfBar(
+        conf_score,
+        avail_w=QUARTER_W - 0.22 * inch - 14,
+        fill=border,
+        empty=colors.HexColor("#c8d0da"),
+        text=txt,
+    )
+
     rows = [
         [Paragraph(short_markup, _cp("cn", fontName="Helvetica-Bold", fontSize=9))],
         [Paragraph(full_name, _cp("cfn", fontName="Helvetica-Bold", fontSize=7, leading=10))],
         [Paragraph(display_with_arrow, _cp("cv", fontName="Helvetica-Bold", fontSize=17, leading=21))],
         [HRFlowable(width=QUARTER_W - 0.22 * inch, thickness=0.5, color=border)],
         [Paragraph(
-            f"<b>{rs['label']}</b>  ·  as of {as_of}",
+            f"<b>{re.score_label(series_id, risk)}</b>  ·  as of {as_of}",
             _cp("cst", fontSize=7),
         )],
+        [conf_bar],
     ]
     inner = Table(rows, colWidths=[QUARTER_W - 0.22 * inch])
     inner.setStyle(TableStyle([
@@ -503,64 +588,742 @@ def _build_crisis(story, re: RiskEngine, dl, crisis_dims: dict):
 
 _GLOSSARY = [
     # (term, plain-English definition) — grouped by theme
-    # Inflation
-    ("CPI",      "Consumer Price Index — average price change for a fixed basket of urban household goods"),
-    ("Core CPI", "CPI excluding food & energy; strips volatile components to show underlying trend"),
-    ("Core PCE", "PCE Price Index ex food & energy — the FOMC's explicit 2% inflation target; published by BEA monthly"),
-    ("CPI vs PCE","PCE typically runs 0.3–0.5% below CPI due to different weights and substitution methodology"),
-    # Money
-    ("M1", "Narrow money — physical currency plus checking-account deposits"),
-    ("M2", "Broad money — M1 plus savings accounts, money-market funds, and small CDs"),
+
+    # ── Inflation — Headline & Core ───────────────────────────────────────
+    ("CPI",         "Consumer Price Index — average price change for a fixed basket of urban household goods"),
+    ("Core CPI",    "CPI excluding food & energy; strips volatile components to show underlying trend"),
+    ("Core PCE",    "PCE Price Index ex food & energy — the FOMC's explicit 2% inflation target; published by BEA monthly"),
+    ("CPI vs PCE",  "PCE typically runs 0.3–0.5% below CPI due to different weights and substitution methodology"),
+    ("Supercore CPI","CPI for services excluding food, energy, and shelter — closely tracks wage growth; the Fed's preferred cyclical inflation gauge"),
+    ("Shelter CPI", "CPI component for housing costs (~35% of CPI); dominated by OER and lags real-time rents by 12–18 months"),
+
+    # ── Inflation — Alternative Measures ─────────────────────────────────
+    ("Median CPI",        "Cleveland Fed measure using the median price change across all CPI components; filters outliers better than core CPI"),
+    ("Trimmed Mean PCE",  "Dallas Fed measure that removes top and bottom price-change outliers each month; smoothest real-time inflation signal"),
+    ("Sticky CPI",        "Atlanta Fed CPI for goods/services with infrequent price changes (e.g., rents, insurance); best predictor of persistent inflation"),
+    ("Flexible CPI",      "CPI for goods/services with frequent price resets (e.g., gasoline, airfare); leads overall CPI by several months"),
+    ("OER",               "Owners' Equivalent Rent — imputed monthly rent a homeowner would pay; ~26% of CPI weight with a structural 12–18 month lag"),
+
+    # ── Inflation — Expectations & Regime ────────────────────────────────
+    ("BEI / Breakeven",   "Market-implied inflation expectations from the gap between TIPS and nominal yields"),
+    ("T5YIE / T10YIE",   "5- and 10-year breakeven inflation rates from TIPS pricing"),
+    ("TIPS",              "Treasury bonds whose principal adjusts with CPI; used to extract inflation expectations"),
+    ("Michigan Survey",   "University of Michigan 1-year household inflation expectations survey; sensitive to gas prices and political sentiment"),
+    ("Deanchoring",       "Loss of public confidence that inflation will return to target; self-fulfilling through wage and price setting behavior"),
+    ("Cyclical Inflation","Demand-driven price pressure — tied to labor market tightness, services spending, wage growth; sensitive to monetary policy"),
+    ("Structural Inflation","Supply-side or cost-push inflation — energy shocks, supply chain disruptions, demographic shifts; slower to respond to rate hikes"),
+    ("Inflation Regime",  "Classification of current inflation environment: At Target (<2.5%), Disinflation, Elevated, or Entrenched (sticky >4%)"),
+
+    # ── Money Supply ─────────────────────────────────────────────────────
+    ("M1",      "Narrow money — physical currency plus checking-account deposits"),
+    ("M2",      "Broad money — M1 plus savings accounts, money-market funds, and small CDs"),
     ("Real M2", "M2 adjusted for inflation; sustained contraction signals tightening conditions"),
-    # Labor
-    ("Unemployment Rate", "Share of the labor force actively seeking but unable to find work"),
-    ("LFPR", "Labor Force Participation Rate — working-age adults in the labor force (%)"),
-    ("Emp/Pop Ratio", "Share of all working-age adults employed; unaffected by participation shifts"),
-    ("Nonfarm Payrolls", "Net monthly job additions across all non-agricultural sectors"),
-    # Markets
-    ("VIX", "CBOE Volatility Index — market's 30-day implied volatility; the 'fear gauge'"),
-    ("CAPE / Shiller P/E", "S&P 500 price divided by 10-year inflation-adjusted average earnings"),
-    ("Trailing P/E", "Stock price divided by last 12 months of reported earnings"),
-    ("10Y Treasury Yield", "Benchmark long-term government rate; affects all asset prices"),
-    ("CRE", "Commercial Real Estate — offices, retail, apartments, and industrial property"),
-    ("CRE Lending Stds", "Net % banks tightening CRE loan standards (SLOOS); > 40% signals credit contraction ahead"),
-    ("CC Delinquency", "Share of credit card loans past due — broad consumer credit health signal"),
-    # Liquidity
-    ("FSI", "Financial Stress Index — 0 = normal; positive = above-average systemic stress"),
-    ("NFCI", "National Financial Conditions Index — Chicago Fed weekly gauge across 105 variables"),
-    ("TED Spread", "3-mo LIBOR minus 3-mo T-bill rate — interbank credit risk (discontinued 2023)"),
-    ("SOFR", "Secured Overnight Financing Rate — overnight repo benchmark; LIBOR replacement"),
-    ("Reverse Repo (RRP)", "Fed facility where banks park excess cash; high usage = ample reserves"),
-    ("NFCI Credit", "NFCI subindex isolating credit conditions specifically"),
-    # Credit
-    ("HY Spread (OAS)", "Extra yield demanded above Treasuries for below-investment-grade bonds"),
-    ("IG Spread (OAS)", "Extra yield demanded above Treasuries for investment-grade corporate bonds"),
-    ("OAS", "Option-Adjusted Spread — yield spread net of embedded call/put option value"),
-    # Policy
-    ("Fed Funds Rate", "Fed's overnight policy rate set by the FOMC; the primary monetary tool"),
-    ("WALCL", "Fed balance sheet total assets; expanded via QE, shrunk via QT"),
-    ("T5YIE / T10YIE", "5- and 10-year breakeven inflation rates from TIPS pricing"),
-    ("TIPS", "Treasury bonds whose principal adjusts with CPI; used to extract inflation expectations"),
-    ("QE / QT", "Quantitative Easing (buying assets) / Tightening (shrinking balance sheet)"),
-    ("BEI / Breakeven", "Market-implied inflation expectations from the gap between TIPS and nominal yields"),
-    ("SAAR", "Seasonally Adjusted Annual Rate — removes seasonal patterns, expressed at annual pace"),
-    ("Debt / GDP", "Federal debt as a percentage of gross domestic product"),
-    ("Interest / Receipts", "Federal interest payments as a share of total government revenues"),
-    ("Real FF Rate", "Fed Funds Rate minus Core CPI YoY — the inflation-adjusted policy stance"),
-    # Yield curve / recession
-    ("Yield Curve (10Y-2Y)", "Spread between 10-year and 2-year Treasury yields; inversion has preceded every US recession since 1970"),
-    ("Inverted Curve", "When short rates exceed long rates (spread < 0) — markets pricing near-term risk higher than long-run growth"),
-    ("NY Fed Rec. Prob.", "Model-based 12-month recession probability using yield curve slope; above 30% has historically been a reliable signal"),
-    # Bank lending
-    ("SLOOS", "Senior Loan Officer Opinion Survey — quarterly Fed survey on bank lending standards and demand"),
-    ("Lending Standards", "Net % of banks tightening loan conditions; tightening > 40% historically signals credit contraction ahead"),
-    # Housing
-    ("Housing Starts", "New residential units started monthly (SAAR); a leading indicator for construction employment and materials"),
-    ("Case-Shiller HPI", "S&P/Case-Shiller repeat-sales home price index; published with ~2-month lag"),
-    ("Mortgage Rate (30Y)", "Freddie Mac Primary Mortgage Market Survey; directly affects housing affordability and purchase volume"),
-    # Dollar
-    ("Dollar Index (DTWEX)", "Trade-weighted U.S. dollar index vs. 26 currencies; rapid appreciation tightens global financial conditions"),
+
+    # ── Labor — Unemployment & Participation ─────────────────────────────
+    ("U-3 (Unemployment)", "Official unemployment rate — share of the labor force actively seeking but unable to find work"),
+    ("U-6 (Underemployment)","Broad labor underutilization: unemployed + marginally attached workers + part-time for economic reasons"),
+    ("U6–U3 Gap",          "Difference between U-6 and U-3; widening gap signals rising hidden slack — workers underemployed, not counted as unemployed"),
+    ("LFPR",               "Labor Force Participation Rate — working-age adults in the labor force (%)"),
+    ("Emp/Pop Ratio",      "Share of all working-age adults employed; unaffected by participation shifts"),
+    ("Sahm Rule",          "Recession indicator triggered when the 3-month avg unemployment rate rises 0.5pp above its 12-month low"),
+
+    # ── Labor — Employment & Claims ──────────────────────────────────────
+    ("Nonfarm Payrolls",   "Net monthly job additions across all non-agricultural sectors"),
+    ("AHE",                "Average Hourly Earnings — monthly wage growth measure; YoY above 4% in a tight market signals wage-price pressure"),
+    ("ECI",                "Employment Cost Index — quarterly measure of total compensation costs including benefits; less volatile than AHE"),
+    ("Initial Claims",     "Weekly new unemployment insurance filings (ICSA); a timely leading indicator of layoff activity"),
+    ("Continued Claims",   "Number of people currently receiving unemployment benefits (CCSA); reflects difficulty finding new jobs"),
+    ("Absorption Ratio",   "Ratio of continued claims to initial claims; rising ratio means fired workers are taking longer to find new jobs"),
+    ("Temp Employment",    "Temporary help services payrolls (TEMPHELPS); often turns negative 3–6 months before broader job losses"),
+
+    # ── Labor — JOLTS, Wages & Productivity ──────────────────────────────
+    ("JOLTS",              "Job Openings and Labor Turnover Survey — monthly BLS survey of open positions, hires, quits, and layoffs"),
+    ("Job Openings",       "Total unfilled positions (JTSJOL); > 10M openings historically signals very tight labor conditions"),
+    ("Quits Rate",         "Share of employed workers voluntarily quitting (JTSQUR); high rate = workers confident in finding better jobs"),
+    ("Layoffs Rate",       "Share of employed workers involuntarily separated (JTSLDR); rising rate = employer-driven labor market deterioration"),
+    ("Beveridge Curve",    "Relationship between job openings and unemployment; shift outward = matching inefficiency or structural mismatch"),
+    ("V/U Ratio",          "Vacancies-to-Unemployed ratio; above 1.0 means more jobs than job seekers — historically rare and inflationary"),
+    ("Nonfarm Productivity","Output per hour worked in the nonfarm business sector (OPHNFB); rising productivity allows wages to grow without inflation"),
+    ("ULC",                "Unit Labor Costs — labor cost per unit of output (ULCNFB); sustained rise above 3% YoY signals inflation pressure"),
+    ("Real Wage Growth",   "Nominal wage growth minus CPI; negative real wages erode purchasing power even when nominal wages rise"),
+    ("LDI",                "Labor Deterioration Index — composite 0–100 score weighting unemployment, claims, JOLTS, and payrolls; >60 = significant stress"),
+
+    # ── Leading Indicators & Business Cycle ──────────────────────────────
+    ("LEI",                "Conference Board Leading Economic Index — composite of 10 forward-looking indicators; sustained decline signals recession"),
+    ("BCI",                "Business Cycle Indicator — normalized composite of leading indicators scaled 0–100; <40 = contraction territory"),
+    ("ISM PMI",            "ISM Manufacturing Purchasing Managers' Index; above 50 = expansion, below 50 = contraction"),
+    ("ISM New Orders",     "ISM sub-index of new manufacturing orders; the most forward-looking component of the PMI"),
+    ("Building Permits",   "Monthly new residential building permits (SAAR); a leading indicator for housing activity 3–6 months ahead"),
+    ("NBER Recession",     "Official U.S. recession dates determined by the NBER Business Cycle Dating Committee; typically declared months after onset"),
+    ("Diffusion Index",    "Share of indicators improving minus share deteriorating; above 50 = net expansion, below 50 = net contraction"),
+
+    # ── Financial Conditions ──────────────────────────────────────────────
+    ("FCI",                "Financial Conditions Index — composite of rates, spreads, equity prices, and volatility into a single tightness score"),
+    ("NFCI",               "National Financial Conditions Index — Chicago Fed weekly gauge across 105 variables; negative = easy, positive = tight"),
+    ("STLFSI",             "St. Louis Fed Financial Stress Index — weekly composite; values above 0 indicate above-average financial stress"),
+    ("SOFR",               "Secured Overnight Financing Rate — overnight repo benchmark; LIBOR replacement since 2023"),
+    ("Reverse Repo (RRP)", "Fed facility where counterparties park cash overnight; high usage = ample reserves parked at the Fed; drawdown reflects reserve redistribution, T-bill issuance absorbing MMF demand, or genuine liquidity reduction — context required"),
+    ("NFCI Credit",        "NFCI subindex isolating credit conditions specifically; most sensitive component to bank lending tightness"),
+    ("CP-Tsy Spread",      "Commercial paper rate minus T-bill rate — short-term funding stress indicator; spikes during financial crises"),
+
+    # ── Credit Markets ────────────────────────────────────────────────────
+    ("HY Spread (OAS)",    "Extra yield demanded above Treasuries for below-investment-grade bonds; > 600bps signals distress"),
+    ("IG Spread (OAS)",    "Extra yield demanded above Treasuries for investment-grade corporate bonds"),
+    ("OAS",                "Option-Adjusted Spread — yield spread net of embedded call/put option value"),
+    ("SLOOS",              "Senior Loan Officer Opinion Survey — quarterly Fed survey on bank lending standards and demand"),
+    ("Lending Standards",  "Net % of banks tightening loan conditions; tightening > 40% historically signals credit contraction ahead"),
+    ("CRE",                "Commercial Real Estate — offices, retail, apartments, and industrial property"),
+    ("CRE Lending Stds",  "Net % banks tightening CRE loan standards (SLOOS); > 40% signals credit contraction ahead"),
+    ("CC Delinquency",     "Share of credit card loans past due — broad consumer credit health signal"),
+    ("Delinquency Rate",   "Share of loans past due (all loans, CRE, or mortgages); rising rate signals deteriorating credit quality"),
+    ("Bank Deposits",      "Total deposits at commercial banks (DPSACBM027SBOG); sharp decline signals deposit flight or tightening liquidity"),
+    ("Charge-off Rate",    "Loans written off as unrecoverable as a % of total loans; lags delinquencies by 1–3 quarters"),
+
+    # ── Markets & Valuation ───────────────────────────────────────────────
+    ("VIX",                "CBOE Volatility Index — market's 30-day implied volatility; the 'fear gauge'; > 30 signals elevated stress"),
+    ("CAPE / Shiller P/E", "S&P 500 price divided by 10-year inflation-adjusted average earnings; > 30 historically precedes lower future returns"),
+    ("Trailing P/E",       "Stock price divided by last 12 months of reported earnings"),
+    ("10Y Treasury Yield", "Benchmark long-term government rate; affects all asset prices via the risk-free rate"),
+
+    # ── Policy & Fiscal ───────────────────────────────────────────────────
+    ("Fed Funds Rate",     "Fed's overnight policy rate set by the FOMC; the primary monetary policy tool"),
+    ("Real FF Rate",       "Fed Funds Rate minus Core CPI YoY — the inflation-adjusted policy stance; negative = accommodative"),
+    ("QE / QT",            "Quantitative Easing (buying assets to inject reserves) / Tightening (shrinking the Fed balance sheet)"),
+    ("WALCL",              "Fed balance sheet total assets; expanded via QE, shrunk via QT"),
+    ("SAAR",               "Seasonally Adjusted Annual Rate — removes seasonal patterns, expressed at annual pace"),
+    ("Debt / GDP",         "Federal debt as a percentage of gross domestic product; above 100% limits fiscal flexibility"),
+    ("Interest / Receipts","Federal interest payments as a share of total government revenues; rising ratio crowds out discretionary spending"),
+
+    # ── Yield Curve & Recession Indicators ───────────────────────────────
+    ("Yield Curve (10Y-2Y)","Spread between 10-year and 2-year Treasury yields; inversion has preceded every US recession since 1970"),
+    ("Inverted Curve",      "When short rates exceed long rates (spread < 0) — markets pricing near-term risk higher than long-run growth"),
+    ("NY Fed Rec. Prob.",   "Model-based 12-month recession probability using yield curve slope; above 30% has historically been a reliable signal"),
+
+    # ── Housing ───────────────────────────────────────────────────────────
+    ("Housing Starts",     "New residential units started monthly (SAAR); a leading indicator for construction employment and materials"),
+    ("Case-Shiller HPI",   "S&P/Case-Shiller repeat-sales home price index; published with ~2-month lag"),
+    ("Mortgage Rate (30Y)","Freddie Mac Primary Mortgage Market Survey; directly affects housing affordability and purchase volume"),
+
+    # ── Dollar ────────────────────────────────────────────────────────────
+    ("Dollar Index (DTWEX)","Trade-weighted U.S. dollar index vs. 26 currencies; rapid appreciation tightens global financial conditions"),
+
+    # ── Global Macro & FX ─────────────────────────────────────────────────
+    ("Brent Crude",         "European benchmark for global oil pricing; closely tracked because it sets the reference price for ~2/3 of world oil contracts"),
+    ("PPI Commodities",     "Producer Price Index for all commodities; a broad upstream inflation gauge that leads CPI by 2–3 months"),
+    ("Gold Price",          "Safe-haven and inflation hedge; rising gold reflects dollar stress, elevated inflation fear, or geopolitical risk premium"),
+    ("DXY / Broad USD",     "Trade-weighted U.S. dollar index; strong dollar tightens global financial conditions for dollar-denominated debt holders"),
+    ("EUR/USD",             "Most-traded FX pair globally; reflects Fed-ECB policy divergence and Eurozone growth/risk premium vs. the U.S."),
+    ("JPY/USD",             "Yen per dollar; rising JPY/USD = weaker yen = BOJ/Fed divergence. Yen is the world's primary carry-trade funding currency"),
+    ("CNY/USD",             "Yuan per dollar; rapid depreciation signals China growth stress or capital outflows with global EM contagion risk"),
+    ("ECB Rate",            "European Central Bank deposit facility rate; the benchmark monetary policy instrument for the 20-nation Euro Area"),
+    ("BOJ Rate",            "Bank of Japan overnight call rate; BOJ normalization from near-zero is a major global tail risk via yen carry unwind"),
+    ("CB Divergence",       "Gaps between major central bank policy rates; drives FX, capital flows, and global financial conditions asymmetries"),
+
+    # ── Macro Regime ─────────────────────────────────────────────────────
+    ("Macro Regime",        "Classification of the current macro environment based on growth, inflation, financial conditions, and credit dimensions"),
+    ("Goldilocks",          "Above-trend growth + contained inflation + neutral FCI — the optimal backdrop for broad risk appetite"),
+    ("Reflation",           "Above-trend growth + rising inflation — commodity and cyclical outperformance; central banks may be behind the curve"),
+    ("Stagflation",         "Below-trend growth + elevated inflation — worst policy trade-off; rate cuts risk entrenching inflation"),
+    ("Disinflation",        "Softening growth + moderating inflation — rate cuts become viable; duration assets typically outperform"),
+    ("Liquidity Boom",      "Easy financial conditions + credit expansion + asset price inflation — watch for late-cycle excess"),
+    ("Tightening Cycle",    "Rising rates + tightening FCI — overtightening risk (inversion, spread widening, claims acceleration)"),
+    ("Balance-Sheet Recession","Credit collapse + deflation risk — the defining challenge is debt deleveraging, not monetary policy adjustment"),
+    ("Dimension Score",     "Normalized 0-to-1 risk score for each macro dimension: 0 = healthy, 1 = severely stressed"),
+
+    # ── Structural Macro ─────────────────────────────────────────────────
+    ("Output Gap",          "(Real GDP − Potential GDP) / Potential GDP × 100%; positive = overheating, negative = economic slack"),
+    ("Potential GDP",       "CBO's estimate of the economy's non-inflationary production capacity — sets the benchmark for the output gap"),
+    ("r* (Neutral Rate)",   "The real interest rate consistent with full employment and stable inflation. Unobservable; estimated with state-space models (e.g., Holston-Laubach-Williams). Often proxied by the 10Y TIPS yield, though TIPS also embeds a real term premium (~0.5–1.5%) that causes it to overstate r*, especially during tightening cycles."),
+    ("Real FF Rate",        "Nominal Fed Funds Rate minus core CPI YoY — policy stance indicator: above the 10Y real rate = restrictive; below = accommodative"),
+    ("10Y TIPS Yield",      "Yield on 10Y inflation-protected Treasuries. A market-observable long-run real rate benchmark, but not equivalent to r*: the TIPS yield also embeds a real term premium and a TIPS liquidity discount, both absent from the neutral rate concept."),
+    ("Working Age Pop.",    "Population aged 15–64 (FRED: LFWA64TTUSM647S); slow-moving driver of labor supply and long-run potential GDP"),
+    ("Globalization Index", "Proxy from USD trend: dollar appreciation signals deglobalization; commodity supercycles track globalization phases"),
+
+    # ── Fiscal Analytics ─────────────────────────────────────────────────
+    ("Interest/Receipts",   "Federal interest payments as % of total tax receipts — the fraction of each tax dollar consumed by debt service"),
+    ("Primary Balance",     "Budget balance excluding interest payments; the government's controllable fiscal position and key sustainability metric"),
+    ("Primary Deficit",     "Primary balance below zero — government spending (ex-interest) exceeds revenues; the most concerning fiscal signal"),
+    ("Fiscal Impulse",      "Year-over-year change in the deficit/GDP ratio; positive = fiscal stimulus (expanding deficit), negative = fiscal drag"),
+    ("r > g Risk",          "When real interest rates exceed real GDP growth, debt/GDP rises without a primary surplus — the debt spiral condition"),
+    ("Rollover Risk",       "Risk that maturing debt must be refinanced at materially higher rates, increasing the interest burden mechanically"),
+    ("Debt Stabilization",  "Condition where debt/GDP stops rising; requires: primary surplus ≥ (r − g) × debt/GDP, or sufficiently high growth"),
+
+    # ── Probabilistic Forecasting ─────────────────────────────────────────
+    ("Recession Probability","Model-generated probability (0–100%) of recession onset within a specified horizon (6M / 12M / 24M)"),
+    ("Logistic Regression", "Statistical model that maps macro indicator values to a probability between 0% and 100% via a sigmoid function"),
+    ("Feature Contribution","Each indicator's additive contribution to the total recession probability score; identifies the dominant risk drivers"),
+    ("Confidence Band",     "Bootstrap-estimated uncertainty range around the central probability; wider bands = less historical data or regime change"),
+    ("OOS Backtest",        "Out-of-sample backtest — model trained on data before a given date, tested on data it never saw during training"),
+    ("Hit Rate",            "Share of recessions correctly flagged by the model above a chosen probability threshold"),
+    ("False Positive Rate", "Share of non-recession periods incorrectly flagged as recession risk; the trade-off against hit rate"),
+
+    # ── Statistical Concepts ──────────────────────────────────────────────
+    ("Z-Score",             "Standard deviations from the historical mean; ±2σ marks the outer 5% of a normal distribution"),
+    ("Percentile",          "Rank of the current reading vs. historical distribution; 90th percentile = higher than 90% of all past readings"),
+    ("YoY / MoM",           "Year-over-Year / Month-over-Month percent change — annualized and monthly rates of change"),
+    ("Rolling Window",      "Historical lookback period for computing statistics; e.g., 20-year window updates each month as new data arrives"),
+    ("Revision Risk",       "Magnitude of typical revisions to initial data releases; high for payrolls and GDP, low for daily market prices"),
 ]
+
+
+def _build_methodology(story, re: RiskEngine, dl):
+    """
+    Methodology Appendix — transparent, reproducible scoring documentation.
+    Covers: normalization methods, threshold system, confidence scoring,
+    indicator registry table, limitations, and key references.
+    """
+    story += _section_rule("Methodology Appendix", anchor_id="sec_methodology")
+
+    # ── 1. Framework overview ─────────────────────────────────────────────
+    story.append(_prose(
+        "<b>Overview.</b>  Every indicator in this report is scored using one of four "
+        "normalization methods. All methods are computed at report-generation time from "
+        "the same historical data used for the charts — no pre-computed lookup tables. "
+        "The methodology is intentionally transparent so that any reader can reproduce "
+        "a score given the raw FRED data and the parameters documented below."
+    ))
+    story.append(_prose(
+        "Color codes (green / yellow / red) are <i>descriptive</i>, not predictive. "
+        "They indicate where the current reading sits relative to the historical "
+        "distribution or a literature-calibrated threshold — not whether a recession "
+        "or crisis will occur. Combinations of elevated readings across multiple "
+        "independent dimensions carry more information than any single indicator."
+    ))
+    story.append(Spacer(1, 0.08 * inch))
+
+    # ── 2. Normalization methods table ────────────────────────────────────
+    story.append(_subsection("Normalization Methods"))
+    story.append(_prose(
+        "Each indicator is assigned one of four scoring methods in the indicator registry. "
+        "The method determines how the current value is translated into a risk level, and "
+        "what label is displayed on the card."
+    ))
+    story.append(Spacer(1, 0.04 * inch))
+
+    _MCW = [CONTENT_W * f for f in (0.18, 0.20, 0.15, 0.15, 0.32)]
+    method_header = [
+        Paragraph("<b>Method</b>",      _ps("mh", fontSize=7, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+        Paragraph("<b>Used For</b>",    _ps("mh", fontSize=7, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+        Paragraph("<b>Green Label</b>", _ps("mh", fontSize=7, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+        Paragraph("<b>Yellow Label</b>",_ps("mh", fontSize=7, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+        Paragraph("<b>Red Label</b>",   _ps("mh", fontSize=7, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+    ]
+    method_rows = [
+        ["Fixed Thresholds",
+         "Policy targets, literature-calibrated breakpoints",
+         "Within Range",
+         "Elevated",
+         "Stressed"],
+        ["Percentile\n(higher=worse)",
+         "Most market & macro indicators",
+         "< 75th pctile",
+         "75th–90th pctile",
+         "> 90th pctile"],
+        ["Percentile\n(lower=worse)",
+         "Labor utilization, housing starts",
+         "> 25th pctile",
+         "10th–25th pctile",
+         "< 10th pctile"],
+        ["Z-Score",
+         "Industrial production, structural series",
+         "Within 1σ",
+         "1–2σ from avg",
+         "Beyond 2σ"],
+        ["Standardized\nIndex",
+         "NFCI, STLFSI (pre-standardized by issuer)",
+         "Below Average",
+         "Above Average",
+         "High Stress"],
+    ]
+    _mst = _ps("mc", fontSize=7, textColor=BODY_CLR, leading=10)
+    tbl_methods = Table(
+        [method_header] + [[Paragraph(c, _mst) for c in row] for row in method_rows],
+        colWidths=_MCW,
+    )
+    tbl_methods.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0),  HDR_BG),
+        ("BACKGROUND",    (0, 1), (-1, -1), colors.HexColor("#f7fafc")),
+        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.HexColor("#f7fafc"), colors.white]),
+        ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTSIZE",      (0, 0), (-1, -1), 7),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("LINEBELOW",     (0, 0), (-1, 0),  0.5, colors.white),
+        ("LINEBELOW",     (0, 1), (-1, -1), 0.3, RULE_CLR),
+        ("BOX",           (0, 0), (-1, -1), 0.5, RULE_CLR),
+    ]))
+    story.append(tbl_methods)
+    story.append(Spacer(1, 0.06 * inch))
+    story.append(_prose(
+        "<b>Calibration window.</b>  Percentile and z-score methods use a rolling "
+        "historical window (20 or 30 years, documented per indicator below) ending at "
+        "the most recent observation. A minimum of 24 monthly observations is required; "
+        "if insufficient history is available the method falls back to fixed thresholds. "
+        "The window is chosen to capture at least one full economic cycle while "
+        "remaining relevant to current structural conditions."
+    ))
+    story.append(Spacer(1, 0.10 * inch))
+
+    # ── 3. Confidence scoring ─────────────────────────────────────────────
+    story.append(_subsection("Confidence Scoring"))
+    story.append(_prose(
+        "Each indicator card displays a confidence score (0–100). This is a composite "
+        "metric that answers: <i>how much should I trust the current signal?</i> "
+        "It does not affect the color coding — it qualifies it. A red signal with "
+        "confidence 40 warrants more caution than a red signal with confidence 85."
+    ))
+    story.append(Spacer(1, 0.04 * inch))
+
+    _CCW = [CONTENT_W * f for f in (0.22, 0.10, 0.68)]
+    conf_header = [
+        Paragraph("<b>Component</b>",  _ps("ch", fontSize=7, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+        Paragraph("<b>Weight</b>",     _ps("ch", fontSize=7, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+        Paragraph("<b>Description</b>",_ps("ch", fontSize=7, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+    ]
+    conf_rows = [
+        ["Timeliness",            "25%",
+         "Days since last observation relative to expected update frequency "
+         "(daily=5d, weekly=14d, monthly=60d, quarterly=120d). "
+         "Stale data scores 0."],
+        ["Coverage",              "20%",
+         "Years of history available, reaching full score at 20+ years. "
+         "Insufficient history limits statistical scoring reliability."],
+        ["Predictive Reliability","35%",
+         "Literature-based signal reliability assigned per indicator (0.40–1.00). "
+         "Draws on Estrella & Mishkin (1998), Conference Board LEI methodology, "
+         "NBER recession research, and Fed SLOOS academic literature."],
+        ["Revision Risk",         "20%",
+         "Penalty for data subject to large initial-release revisions. "
+         "Low=1.00 (daily market data, NBER), "
+         "Medium=0.75 (CPI, PCE, LEI), "
+         "High=0.50 (Nonfarm Payrolls, S&P earnings)."],
+    ]
+    _cst = _ps("cc", fontSize=7, textColor=BODY_CLR, leading=10)
+    tbl_conf = Table(
+        [conf_header] + [[Paragraph(c, _cst) for c in row] for row in conf_rows],
+        colWidths=_CCW,
+    )
+    tbl_conf.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0),  HDR_BG),
+        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.HexColor("#f7fafc"), colors.white]),
+        ("FONTSIZE",      (0, 0), (-1, -1), 7),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("LINEBELOW",     (0, 0), (-1, 0),  0.5, colors.white),
+        ("LINEBELOW",     (0, 1), (-1, -1), 0.3, RULE_CLR),
+        ("BOX",           (0, 0), (-1, -1), 0.5, RULE_CLR),
+    ]))
+    story.append(tbl_conf)
+    story.append(Spacer(1, 0.10 * inch))
+
+    # ── 4. Indicator registry table ────────────────────────────────────────
+    story.append(_subsection("Indicator Registry"))
+    story.append(_prose(
+        "Complete registry of all scored indicators. "
+        "<b>Method</b>: normalization approach. "
+        "<b>Win</b>: calibration window in years. "
+        "<b>Rel</b>: predictive reliability 0–1. "
+        "<b>Rev</b>: revision risk (L=Low, M=Medium, H=High). "
+        "Threshold Basis summarizes the literature or statistical source for the scoring threshold."
+    ))
+    story.append(Spacer(1, 0.04 * inch))
+
+    _RCW = [
+        CONTENT_W * 0.11,   # Short name
+        CONTENT_W * 0.13,   # Method
+        CONTENT_W * 0.05,   # Window
+        CONTENT_W * 0.05,   # Reliability
+        CONTENT_W * 0.04,   # Rev risk
+        CONTENT_W * 0.62,   # Threshold rationale
+    ]
+    reg_header = [
+        Paragraph("<b>Indicator</b>",    _ps("rh", fontSize=6.5, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+        Paragraph("<b>Method</b>",       _ps("rh", fontSize=6.5, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+        Paragraph("<b>Win</b>",          _ps("rh", fontSize=6.5, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+        Paragraph("<b>Rel</b>",          _ps("rh", fontSize=6.5, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+        Paragraph("<b>Rev</b>",          _ps("rh", fontSize=6.5, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+        Paragraph("<b>Threshold Basis</b>", _ps("rh", fontSize=6.5, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+    ]
+
+    _method_abbrev = {
+        "fixed_thresholds":   "Fixed",
+        "percentile":         "Pctile",
+        "zscore":             "Z-Score",
+        "standardized_index": "Std. Index",
+    }
+    _rev_abbrev = {"low": "L", "medium": "M", "high": "H"}
+
+    reg_rows = [reg_header]
+    alt = False
+    for cat in CATEGORY_ORDER:
+        cat_ids = [sid for sid in REGISTRY
+                   if REGISTRY[sid]["category"] == cat and sid in dl.available]
+        if not cat_ids:
+            continue
+        cat_label = CATEGORY_LABELS.get(cat, cat).upper()
+        reg_rows.append([
+            Paragraph(cat_label,
+                      _ps("rcat", fontSize=6, fontName="Helvetica-Bold",
+                          textColor=colors.HexColor("#4a5568"))),
+            Paragraph("", _ps("re", fontSize=6)),
+            Paragraph("", _ps("re", fontSize=6)),
+            Paragraph("", _ps("re", fontSize=6)),
+            Paragraph("", _ps("re", fontSize=6)),
+            Paragraph("", _ps("re", fontSize=6)),
+        ])
+        for sid in cat_ids:
+            m = REGISTRY[sid]
+            method_str  = _method_abbrev.get(m.get("normalization_method", "fixed_thresholds"), "Fixed")
+            window_str  = str(m.get("calibration_window_years", 20)) + "y"
+            rel_str     = f"{m.get('predictive_reliability', 0.5):.2f}"
+            rev_str     = _rev_abbrev.get(m.get("revision_risk", "medium"), "M")
+            rationale   = m.get("threshold_rationale", "")
+            _rst = _ps("re", fontSize=6, textColor=BODY_CLR, leading=8.5)
+            _rmt = _ps("rm", fontSize=6, textColor=MUTED_CLR, leading=8.5)
+            reg_rows.append([
+                Paragraph(m.get("short_name", sid), _rst),
+                Paragraph(method_str,  _rmt),
+                Paragraph(window_str,  _rmt),
+                Paragraph(rel_str,     _rmt),
+                Paragraph(rev_str,     _rmt),
+                Paragraph(rationale,   _rmt),
+            ])
+            alt = not alt
+
+    tbl_reg = Table(reg_rows, colWidths=_RCW)
+    reg_style = [
+        ("BACKGROUND",    (0, 0), (-1, 0),  HDR_BG),
+        ("FONTSIZE",      (0, 0), (-1, -1), 6),
+        ("TOPPADDING",    (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("LINEBELOW",     (0, 0), (-1, 0),  0.5, colors.white),
+        ("LINEBELOW",     (0, 1), (-1, -1), 0.3, RULE_CLR),
+        ("BOX",           (0, 0), (-1, -1), 0.5, RULE_CLR),
+    ]
+    # Shade category-header rows differently
+    for row_idx, row in enumerate(reg_rows):
+        if row_idx == 0:
+            continue
+        cell_text = row[0].text if hasattr(row[0], "text") else ""
+        if any(lbl.upper() in cell_text for lbl in CATEGORY_LABELS.values()):
+            reg_style.append(("BACKGROUND", (0, row_idx), (-1, row_idx),
+                               colors.HexColor("#edf2f7")))
+            reg_style.append(("SPAN", (0, row_idx), (-1, row_idx)))
+        elif row_idx % 2 == 0:
+            reg_style.append(("BACKGROUND", (0, row_idx), (-1, row_idx), colors.white))
+        else:
+            reg_style.append(("BACKGROUND", (0, row_idx), (-1, row_idx),
+                               colors.HexColor("#f7fafc")))
+    tbl_reg.setStyle(TableStyle(reg_style))
+    story.append(tbl_reg)
+    story.append(Spacer(1, 0.10 * inch))
+
+    # ── 5. Limitations ─────────────────────────────────────────────────────
+    story.append(_subsection("Limitations & Caveats"))
+    limitations = [
+        ("Survivorship in calibration windows",
+         "The calibration window includes only the period for which data is available. "
+         "Indicators with short histories (e.g., SOFR since 2018) cannot be reliably "
+         "percentile-scored and fall back to fixed thresholds."),
+        ("Regime shifts",
+         "A 20-year rolling window may include structural breaks (e.g., post-2008 "
+         "zero-rate environment, post-2020 M1 definitional change). Percentile scores "
+         "calibrated against a structurally different regime may mis-classify current readings."),
+        ("Revision risk",
+         "Many indicators (Nonfarm Payrolls, GDP, PCE) are substantially revised "
+         "after initial release. The confidence score penalizes high-revision series, "
+         "but the scored value is always the latest available — which may itself be revised."),
+        ("Composite vs. individual",
+         "Crisis dimension scores use worst-of aggregation. This can be overly "
+         "conservative: a single elevated indicator can lift an entire dimension "
+         "even when the other components are benign."),
+        ("No prediction",
+         "All scores are backward-looking relative to the calibration window. "
+         "A reading at the 95th percentile of history tells you it is historically "
+         "unusual — it does not predict that a crisis will follow."),
+    ]
+    _lst = _ps("lim", fontSize=7, textColor=BODY_CLR, leading=10.5)
+    _lmt = _ps("limd", fontSize=7, textColor=MUTED_CLR, leading=10.5)
+    for title, desc in limitations:
+        lim_row = Table(
+            [[Paragraph(f"<b>{title}</b>", _lst), Paragraph(desc, _lmt)]],
+            colWidths=[CONTENT_W * 0.26, CONTENT_W * 0.74],
+        )
+        lim_row.setStyle(TableStyle([
+            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING",  (0, 0), (0, -1), 8),
+            ("LEFTPADDING",   (1, 0), (1, -1), 0),
+            ("TOPPADDING",    (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LINEBELOW",     (0, 0), (-1, 0),  0.3, RULE_CLR),
+        ]))
+        story.append(lim_row)
+    story.append(Spacer(1, 0.10 * inch))
+
+    # ── 6. Key references ──────────────────────────────────────────────────
+    story.append(_subsection("Key References"))
+    refs = [
+        ("Estrella & Mishkin (1998)",
+         "Predicting U.S. Recessions: Financial Variables as Leading Indicators. "
+         "Review of Economics and Statistics 80(1). "
+         "Basis for NY Fed recession probability model (RECPROUSM156N) and yield-curve thresholds."),
+        ("Conference Board LEI Methodology",
+         "The Conference Board Leading Economic Index® for the U.S. — "
+         "Methodological Guide (2022). "
+         "Basis for USSLIND thresholds and recession-precursor interpretation."),
+        ("Shiller, R. (2000)",
+         "Irrational Exuberance. Princeton University Press. "
+         "Basis for CAPE (SP500_CAPE) thresholds and historical calibration."),
+        ("Bernanke & Lown (1991)",
+         "The Credit Crunch. Brookings Papers on Economic Activity 1991(2). "
+         "Basis for SLOOS C&I lending standards threshold (DRTSCILM ≥ 40%)."),
+        ("IMF Fiscal Monitor",
+         "Various editions. "
+         "Basis for sovereign debt/GDP risk thresholds (GFDEGDQ188S)."),
+        ("Sahm, C. (2019)",
+         "Direct Stimulus Payments to Individuals. "
+         "In Recession Ready, Hamilton Project. "
+         "Context for unemployment rate trend interpretation (Sahm Rule)."),
+        ("Chicago Fed NFCI Methodology",
+         "Brave & Butters (2011), Monitoring Financial Stability: A Financial Conditions Index Approach. "
+         "Economic Perspectives Q1 2011. "
+         "Basis for NFCI index interpretation."),
+    ]
+    _rst2 = _ps("rft", fontSize=7, fontName="Helvetica-Bold", textColor=BODY_CLR, leading=10)
+    _rdt  = _ps("rfd", fontSize=7, textColor=MUTED_CLR, leading=10)
+    for author, desc in refs:
+        ref_row = Table(
+            [[Paragraph(author, _rst2), Paragraph(desc, _rdt)]],
+            colWidths=[CONTENT_W * 0.26, CONTENT_W * 0.74],
+        )
+        ref_row.setStyle(TableStyle([
+            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING",  (0, 0), (0, -1), 8),
+            ("LEFTPADDING",   (1, 0), (1, -1), 0),
+            ("TOPPADDING",    (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LINEBELOW",     (0, 0), (-1, 0),  0.3, RULE_CLR),
+        ]))
+        story.append(ref_row)
+
+
+def _build_global_macro(story, gme, rge, sme, dl):
+    story += _section_rule("Global Macro & FX", anchor_id="sec_global_macro")
+    print("  Rendering global macro charts...")
+
+    dash  = gme.global_dashboard()
+    comm  = dash["commodities"]
+    fx    = dash["fx"]
+    cb    = dash["cb_divergence"]
+    rr    = sme.real_rates()
+    og    = sme.output_gap()
+    demo  = sme.demographic_pressure()
+
+    def _fv(v, fmt=".2f", sfx=""):
+        return f"{v:{fmt}}{sfx}" if v is not None else "N/A"
+
+    story.append(_prose(
+        f"<b>Central Bank Divergence:</b> "
+        f"Fed {_fv(cb['fed_rate'], '.2f', '%')} | "
+        f"ECB {_fv(cb['ecb_rate'], '.2f', '%')} | "
+        f"BOJ {_fv(cb['boj_rate'], '.2f', '%')} | "
+        f"Fed–ECB gap: {_fv(cb['fed_ecb_gap'], '+.2f', 'pp')} — {cb['divergence_label']}  ·  "
+        f"<b>USD Broad:</b> {_fv(fx['dxy_yoy'], '+.1f', '% YoY')} ({fx['usd_regime']})  ·  "
+        f"<b>Commodity Pressure:</b> {_fv(comm['commodity_pressure'], '+.1f', '% avg YoY')} — {comm['commodity_regime']}"
+    ))
+    story.append(Spacer(1, 0.08 * inch))
+
+    story.append(_two_charts(
+        central_bank_rates_chart(dl, lookback_years=25),
+        fx_chart(dl, lookback_years=15),
+    ))
+
+    story.append(_subsection("Global Commodity Complex"))
+    story.append(_prose(
+        f"Brent crude: ${_fv(comm['brent_level'], '.0f')}/bbl ({_fv(comm['brent_yoy'], '+.1f', '% YoY')}). "
+        f"Gold: ${_fv(comm['gold_level'], '.0f')}/oz ({_fv(comm['gold_yoy'], '+.1f', '% YoY')}). "
+        f"PPI All Commodities: {_fv(comm['ppi_commodities_yoy'], '+.1f', '% YoY')}. "
+        "Commodity surges lead consumer prices by 2–3 months via energy and food pass-through. "
+        "Gold reflects safe-haven demand and long-run inflation expectations."
+    ))
+    story.append(_full_chart(commodity_chart(dl, lookback_years=15)))
+
+    story.append(_subsection("Structural & Long-Run Context"))
+    story.append(_prose(
+        f"<b>Output gap:</b> {_fv(og['gap_current'], '+.2f', '%')} ({og['label']}). "
+        f"<b>Real FF rate:</b> {_fv(rr['real_ff'], '+.2f', '%')} vs "
+        f"10Y real rate (TIPS proxy) {_fv(rr['tips_10y'], '.2f', '%')} "
+        f"(note: TIPS yield includes a real term premium above true r*) → "
+        f"Stance: <b>{rr['policy_stance']}</b>. "
+        f"<b>Demographics:</b> Working-age population growth "
+        f"{_fv(demo['wap_yoy'], '+.2f', '% YoY')} — {demo['label']}. "
+        "Demographic deceleration structurally constrains potential GDP growth and "
+        "increases the pension/healthcare fiscal burden over the next decade."
+    ))
+    story.append(_two_charts(
+        output_gap_chart(sme),
+        real_rates_chart(sme, dl, lookback_years=20),
+    ))
+    story.append(_full_chart(productivity_chart(sme, lookback_years=20)))
+
+
+def _build_macro_regime(story, rge, dl):
+    story += _section_rule("Macro Regime Classification", anchor_id="sec_regime")
+    print("  Rendering macro regime charts...")
+
+    regime_name, regime_color, regime_desc = rge.classify()
+    dims = rge.dimension_scores()
+
+    def _fv(v, fmt=".2f", sfx=""):
+        return f"{v:{fmt}}{sfx}" if v is not None else "N/A"
+
+    story.append(_prose(
+        f"<b>Current Regime: {regime_name}</b>  ·  {regime_desc}"
+    ))
+    story.append(Spacer(1, 0.06 * inch))
+
+    # Dimension scores table
+    dim_rows = [
+        [Paragraph("<b>Dimension</b>", _ps("dh", fontSize=7, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+         Paragraph("<b>Score</b>",     _ps("dh", fontSize=7, fontName="Helvetica-Bold", textColor=HDR_TEXT)),
+         Paragraph("<b>Label</b>",     _ps("dh", fontSize=7, fontName="Helvetica-Bold", textColor=HDR_TEXT))],
+    ]
+    for dim_key, dim_label in [("growth", "Growth"), ("inflation", "Inflation"),
+                                ("financial", "Financial Conditions"), ("credit", "Credit")]:
+        d = dims[dim_key]
+        score = d["score"]
+        lbl   = d["label"]
+        clr   = colors.HexColor("#276749") if score < 0.35 else (
+                colors.HexColor("#975a16") if score < 0.65 else colors.HexColor("#9b2c2c"))
+        dim_rows.append([
+            Paragraph(dim_label, _ps("dc", fontSize=7, textColor=BODY_CLR)),
+            Paragraph(f"{score:.2f}", _ps("dc", fontSize=7, textColor=clr,
+                                          fontName="Helvetica-Bold")),
+            Paragraph(lbl, _ps("dc", fontSize=7, textColor=BODY_CLR)),
+        ])
+
+    tbl_dims = Table(dim_rows, colWidths=[THIRD_W, THIRD_W * 0.5, THIRD_W * 1.5])
+    tbl_dims.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0),  HDR_BG),
+        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.HexColor("#f7fafc"), colors.white]),
+        ("FONTSIZE",      (0, 0), (-1, -1), 7),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
+        ("LINEBELOW",     (0, 0), (-1, -1), 0.3, RULE_CLR),
+        ("BOX",           (0, 0), (-1, -1), 0.5, RULE_CLR),
+    ]))
+    story.append(tbl_dims)
+    story.append(Spacer(1, 0.08 * inch))
+
+    story.append(_two_charts(
+        regime_scores_chart(rge),
+        regime_timeline_chart(rge, dl, lookback_years=20),
+    ))
+
+    story.append(_subsection("Regime Definitions & Portfolio Implications"))
+    for name, info in MACRO_REGIMES.items():
+        if name == "Uncertain":
+            continue
+        implications = {
+            "Goldilocks":              "Broad risk-on; equities, credit, cyclicals outperform. Duration neutral.",
+            "Reflation":               "Commodities, energy, financials outperform. Underweight duration.",
+            "Stagflation":             "Real assets, commodities, TIPS. Equities underperform; avoid duration.",
+            "Disinflation":            "Duration outperforms. Quality equities. Avoid commodities.",
+            "Liquidity Boom":          "Risk assets and credit outperform. Watch for late-cycle imbalances.",
+            "Tightening Cycle":        "Underweight duration. Financials mixed. Quality over quantity in credit.",
+            "Balance-Sheet Recession": "Cash and short-duration. Defensive equities. Avoid HY credit.",
+        }.get(name, "Context-dependent positioning.")
+        story.append(_prose(f"<b>{name}:</b> {implications}"))
+
+    adj = rge.get_threshold_adjustments()
+    if adj:
+        story.append(Spacer(1, 0.06 * inch))
+        story.append(_prose(
+            "<b>Regime-adjusted thresholds:</b> In the current regime, the following static "
+            "thresholds are overridden: " +
+            "; ".join(f"{k} → {v}" for k, v in adj.items()) + "."
+        ))
+
+
+def _build_fiscal_analytics(story, fae, dl):
+    story += _section_rule("Fiscal Analytics & Sustainability", anchor_id="sec_fiscal_analytics")
+    print("  Rendering fiscal analytics charts...")
+
+    fdash = fae.fiscal_dashboard()
+    sus   = fdash["sustainability"]
+    prim  = fdash["primary"]
+    traj  = fdash["trajectory"]
+    roll  = fdash["rollover"]
+
+    def _fv(v, fmt=".2f", sfx=""):
+        return f"{v:{fmt}}{sfx}" if v is not None else "N/A"
+
+    story.append(_prose(
+        f"<b>Status: {sus['label']}</b>  |  "
+        f"Debt/GDP: {_fv(sus['debt_gdp'], '.1f', '%')}  |  "
+        f"Interest/Receipts: {_fv(sus['int_receipts'], '.1f', '%')}  |  "
+        f"Interest/GDP: {_fv(sus['int_gdp'], '.2f', '%')}  |  "
+        f"Primary Balance: {_fv(prim['primary_pct_gdp'], '+.1f', '% GDP')}  |  "
+        f"Trajectory: {traj['label']}"
+    ))
+    story.append(Spacer(1, 0.08 * inch))
+
+    story.append(_prose(
+        "The Interest/Receipts ratio — not the debt/GDP level — is the most operationally "
+        "meaningful sustainability metric. It answers: 'Of every tax dollar collected, how "
+        "many cents go directly to paying interest before any government service is funded?' "
+        "This ratio is non-discretionary: unlike defense or welfare spending, interest cannot "
+        "be cut. A rising Interest/Receipts ratio crowds out all other fiscal functions."
+    ))
+    story.append(Spacer(1, 0.06 * inch))
+
+    story.append(_full_chart(debt_trajectory_chart(dl, lookback_years=40)))
+    story.append(_full_chart(debt_service_chart(fae, lookback_years=30)))
+
+    story.append(_subsection("Primary Balance & Fiscal Impulse"))
+    story.append(_prose(
+        "The primary balance (total balance + interest payments) is the government's "
+        "controllable fiscal position. A primary surplus of (r − g) × debt/GDP is required "
+        "to stabilize the debt ratio, where r = real interest rate and g = real GDP growth. "
+        f"Current primary balance: {_fv(prim['primary_pct_gdp'], '+.1f', '% GDP')}. "
+        f"Total deficit: {_fv(prim['deficit_pct_gdp'], '+.1f', '% GDP')} "
+        f"(difference = interest burden of {_fv(prim['interest_B'], ',.0f', ' $B SAAR')})."
+    ))
+    story.append(_two_charts(
+        primary_balance_chart(fae, lookback_years=40),
+        fiscal_impulse_chart(fae, lookback_years=30),
+        small=True,
+    ))
+
+    story.append(_subsection("Rollover Exposure & Trajectory"))
+    story.append(_prose(
+        f"10Y yield: {_fv(roll['current_10y_rate'], '.2f', '%')} vs "
+        f"{_fv(roll['rate_5y_ago'], '.2f', '%')} five years ago "
+        f"(change: {_fv(roll['rate_change_5y'], '+.2f', 'pp')}). "
+        f"Total debt: ${_fv(roll['debt_total_B'], ',.0f')}B. "
+        f"Estimated incremental annual rollover cost: "
+        f"${_fv(roll['est_incremental_cost_ann_B'], '+,.0f')}B (30% annual rollover assumption). "
+        f"Assessment: {roll['label']}. "
+        f"5-year fiscal trajectory: debt/GDP changing at "
+        f"{_fv(traj['debt_gdp_trend_ann'], '+.2f', 'pp/yr')}. "
+        f"Interest acceleration: {_fv(traj['interest_acc_ann'], '+.1f', ' $B/yr ann.')}. "
+        f"Revenue growth: {_fv(traj['receipts_trend_ann'], '+.1f', ' $B/yr ann.')}. "
+        "The sustainability question is not whether debt/GDP is high, but whether it can "
+        "be stabilized — which requires r < g, or a primary surplus, or both."
+    ))
 
 
 def _build_glossary(story):
@@ -600,12 +1363,17 @@ def _build_glossary(story):
             ))
         return rows
 
-    layout = Table(
-        [[_glossary_col(left_col), _glossary_col(right_col)]],
-        colWidths=[HALF_W, HALF_W],
-    )
+    left_items  = _glossary_col(left_col)
+    right_items = _glossary_col(right_col)
+    max_len = max(len(left_items), len(right_items))
+    glos_rows = []
+    for i in range(max_len):
+        l = left_items[i]  if i < len(left_items)  else Spacer(1, 1)
+        r = right_items[i] if i < len(right_items) else Spacer(1, 1)
+        glos_rows.append([l, r])
+    layout = Table(glos_rows, colWidths=[HALF_W, HALF_W], splitByRow=1)
     layout.setStyle(TableStyle([
-        ("VALIGN",      (0, 0), (-1, -1), "TOP"),
+        ("VALIGN",       (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING",  (0, 0), (0, -1), 0),
         ("RIGHTPADDING", (0, 0), (0, -1), 12),
         ("LEFTPADDING",  (1, 0), (1, -1), 12),
@@ -617,10 +1385,13 @@ def _build_glossary(story):
 def _build_summary(story, re: RiskEngine, dl):
     story += _section_rule("Summary — All Indicators", anchor_id="sec_summary")
     story.append(_prose(
-        "Each card shows the current reading, risk status, and full indicator name. "
+        "Each card shows the current reading, scoring status, and confidence score. "
         "Click the indicator name to jump to the detailed section. "
-        "Normal (green) · Elevated (yellow) · Stressed (red). "
-        "Context and combinations matter more than any single reading."
+        "Labels reflect the scoring method: percentile-scored indicators show "
+        "pctile bands (&lt;75th / 75–90th / &gt;90th); z-score indicators show σ-distance; "
+        "fixed-threshold indicators show Within Range / Elevated / Stressed. "
+        "Context and combinations matter more than any single reading. "
+        "See the Methodology Appendix for full scoring details."
     ))
     story.append(Spacer(1, 0.1 * inch))
 
@@ -638,104 +1409,171 @@ def _build_summary(story, re: RiskEngine, dl):
         story.append(Spacer(1, 0.06 * inch))
 
 
-def _build_inflation(story, dl):
+def _build_inflation(story, iae, dl):
     story += _section_rule("Inflation", anchor_id="sec_inflation")
     print("  Rendering inflation charts...")
-    story.append(_two_charts(
-        area_chart(dl, "CPIAUCSL", yoy=True, lookback_years=25,
-                   threshold_green=2.5, threshold_red=4.5,
-                   title="Headline CPI — Year-over-Year %"),
-        area_chart(dl, "CPILFESL", yoy=True, lookback_years=25,
-                   threshold_green=2.5, threshold_red=4.0,
-                   color=C["teal"], fill_color="rgba(44,122,123,0.09)",
-                   title="Core CPI (ex Food & Energy) — Year-over-Year %"),
-    ))
-    story.append(_two_charts(
-        multi_line_chart(dl,
-            [("CPILFESL", C["teal"]), ("PCEPILFE", C["blue"])],
-            title="Core CPI vs. Core PCE — YoY % (10 Years)",
-            lookback_years=10, yoy=True),
-        area_chart(dl, "PCEPILFE", yoy=True, lookback_years=25,
-                   threshold_green=2.5, threshold_red=4.0,
-                   color=C["blue"], fill_color="rgba(43,108,176,0.10)",
-                   title="Core PCE — Year-over-Year %"),
-    ))
+
+    dash_infl = iae.inflation_dashboard()
+    regime_label, _ = iae.inflation_regime()
+
+    def _fv(v, fmt=".2f", sfx="%"):
+        return f"{v:{fmt}}{sfx}" if v is not None else "N/A"
+
     story.append(_prose(
-        "Core PCE (Personal Consumption Expenditures ex food & energy) is the FOMC's explicit "
-        "2% inflation target, published monthly by the BEA with a ~4 week lag. It typically runs "
-        "0.3–0.5% below Core CPI due to different category weights and substitution effects. "
-        "When both measures are simultaneously elevated, the inflation signal is more credible "
-        "and policy response more likely."
-    ))
-    story.append(Spacer(1, 0.10 * inch))
-    story.append(_subsection("Money Supply"))
-    print("  Rendering money supply charts...")
-    story.append(_full_chart(multi_line_chart(dl,
-        [("M1SL", C["blue"]), ("M2SL", C["teal"])],
-        title="M1 & M2 Money Supply — Level (Billions $)",
-        lookback_years=20,
-    )))
-    story.append(_prose(
-        "M1 is the narrowest measure of money: currency and demand deposits. "
-        "M2 adds savings accounts, retail money market funds, and small CDs. "
-        "Rapid M2 growth often precedes inflation with a 12–18 month lag. "
-        "Real M2 contraction — M2 growing slower than inflation — typically signals "
-        "tightening monetary conditions."
+        f"<b>Regime: {regime_label}</b>  |  "
+        f"Headline CPI: {_fv(dash_infl['headline'])}  |  "
+        f"Core CPI: {_fv(dash_infl['core_cpi'])}  |  "
+        f"Core PCE: {_fv(dash_infl['core_pce'])}  |  "
+        f"Median CPI: {_fv(dash_infl['median_cpi'])}  |  "
+        f"Trimmed Mean PCE: {_fv(dash_infl['trimmed_mean_pce'])}  |  "
+        f"Supercore: {_fv(dash_infl['supercore'])}  |  "
+        f"Sticky CPI: {_fv(dash_infl['sticky_cpi'])}  |  "
+        f"OER: {_fv(dash_infl['oer_yoy'])}  |  "
+        f"Mich Exp 1Y: {_fv(dash_infl['mich_exp'])}  |  "
+        f"5Y Breakeven: {_fv(dash_infl['be_5y'])}  |  "
+        f"10Y Breakeven: {_fv(dash_infl['be_10y'])}"
     ))
     story.append(Spacer(1, 0.08 * inch))
+
+    # ── Headline & Core ───────────────────────────────────────────────
     story.append(_two_charts(
-        area_chart(dl, "M2SL", yoy=True, lookback_years=30,
+        area_chart(dl, "CPIAUCSL", yoy=True, lookback_years=20,
+                   threshold_green=2.5, threshold_red=4.5,
+                   title="Headline CPI — Year-over-Year %"),
+        multi_line_chart(dl,
+            [("CPILFESL", C["teal"]), ("PCEPILFE", C["blue"])],
+            title="Core CPI vs. Core PCE — YoY %",
+            lookback_years=15, yoy=True),
+    ))
+
+    # ── Alternative Measures ──────────────────────────────────────────
+    story.append(_subsection("Alternative Inflation Measures"))
+    story.append(_prose(
+        "Median CPI (Cleveland Fed) and Trimmed Mean PCE (Dallas Fed) filter extreme price "
+        "movements and are better predictors of future inflation than Core CPI. Sticky Price CPI "
+        "captures components that change infrequently — the best predictor of persistent inflation "
+        "and underlying regime shifts."
+    ))
+    story.append(_two_charts(
+        inflation_multi_chart(dl, lookback_years=10),
+        sticky_flexible_chart(dl, lookback_years=10),
+        small=True,
+    ))
+
+    # ── Shelter Decomposition ─────────────────────────────────────────
+    story.append(_subsection("Shelter Decomposition"))
+    story.append(_prose(
+        "Owners' Equivalent Rent (OER, ~26% of CPI) lags actual market rents by 12–18 months. "
+        "Supercore CPI (Core ex-Shelter) shows services inflation driven by wages — "
+        "the Fed's primary focus for determining when disinflation is structural vs. transitory."
+    ))
+    story.append(_full_chart(shelter_decomposition_chart(dl, lookback_years=8)))
+
+    # ── Expectations ─────────────────────────────────────────────────
+    story.append(_subsection("Inflation Expectations"))
+    story.append(_prose(
+        "Well-anchored expectations are essential to the Fed's credibility. "
+        "Michigan 1-year survey persistently above 4% or 5/10-year breakevens above 2.5% "
+        "signal deanchoring risk that historically requires more aggressive policy response."
+    ))
+    story.append(_full_chart(inflation_expectations_chart(dl, lookback_years=10)))
+    story.append(Spacer(1, 0.10 * inch))
+
+    # ── Money Supply ─────────────────────────────────────────────────
+    story.append(_subsection("Money Supply"))
+    print("  Rendering money supply charts...")
+    story.append(_two_charts(
+        area_chart(dl, "M2SL", yoy=True, lookback_years=20,
                    title="M2 Growth — Year-over-Year %"),
         area_chart(dl, "M2REAL", yoy=True, lookback_years=20,
                    color=C["teal"], fill_color="rgba(44,122,123,0.09)",
                    title="Real M2 Growth — Year-over-Year %"),
     ))
+    story.append(_prose(
+        "Rapid M2 growth historically precedes inflation with a 12–18 month lag. "
+        "Real M2 contraction signals tightening monetary conditions that typically "
+        "suppress demand-driven price pressure within 2–4 quarters."
+    ))
 
 
-def _build_labor(story, dl):
+def _build_labor(story, lae, dl):
     story += _section_rule("Labor Market", anchor_id="sec_labor")
     print("  Rendering labor charts...")
+
+    ldi = lae.labor_deterioration_index()
+    wages = lae.wage_pressure()
+    ugap = lae.unemployment_gap()
+    jolts = lae.jolts_summary()
+
+    def _fv(v, fmt=".1f", sfx=""):
+        return f"{v:{fmt}}{sfx}" if v is not None else "N/A"
+
+    story.append(_prose(
+        f"<b>Labor Deterioration Index: {_fv(ldi.get('score'), '.0f')}/100</b>  |  "
+        f"U-3: {_fv(ugap.get('u3'), '.1f', '%')}  |  "
+        f"U-6: {_fv(ugap.get('u6'), '.1f', '%')}  |  "
+        f"U6–U3 Gap: {_fv(ugap.get('gap'), '.1f', 'pp')}  |  "
+        f"AHE YoY: {_fv(wages.get('ahe_yoy'), '.1f', '%')}  |  "
+        f"Real Wage: {_fv(wages.get('real_wage'), '+.1f', '%')}  |  "
+        f"ULC YoY: {_fv(wages.get('ulc_yoy'), '.1f', '%')}  |  "
+        f"Quits: {_fv(jolts.get('quits_rate'), '.2f', '%')}  |  "
+        f"Layoffs: {_fv(jolts.get('layoffs_rate'), '.2f', '%')}"
+    ))
+    story.append(Spacer(1, 0.08 * inch))
+
+    # ── Unemployment & Payrolls ────────────────────────────────────────
     story.append(_two_charts(
-        area_chart(dl, "UNRATE", lookback_years=30,
-                   threshold_green=4.5, threshold_red=6.0,
-                   color=C["slate"], fill_color="rgba(74,85,104,0.08)",
-                   title="Unemployment Rate %"),
+        u3_u6_chart(dl, lookback_years=15),
         bar_change_chart(dl, "PAYEMS", lookback_years=5,
                          title="Nonfarm Payrolls — Monthly Change (Thousands)"),
     ))
+
+    # ── JOLTS & Claims ────────────────────────────────────────────────
+    story.append(_subsection("JOLTS & Jobless Claims"))
+    story.append(_prose(
+        "Job openings lead payroll changes by 2–4 months. The quits rate falls when workers "
+        "lose confidence in job mobility — a reliable 3–6 month leading indicator of rising "
+        "unemployment. Continued claims measure re-hiring absorption."
+    ))
     story.append(_two_charts(
-        line_chart(dl, "CIVPART", lookback_years=30, color=C["teal"],
-                   title="Labor Force Participation Rate %"),
+        jolts_chart(dl, lookback_years=10),
+        claims_dashboard_chart(dl, lookback_years=8),
+        small=True,
+    ))
+
+    # ── Wages, Productivity & ULC ─────────────────────────────────────
+    story.append(_subsection("Wages, Productivity & Unit Labor Costs"))
+    story.append(_prose(
+        "Unit Labor Costs (wages ÷ productivity) is the primary transmission mechanism from "
+        "labor costs to goods and services prices. Sustained ULC above 2.5% YoY is "
+        "inconsistent with the Fed's 2% inflation target. "
+        f"ECI YoY: {_fv(wages.get('eci_yoy'), '.1f', '%')} | "
+        f"Productivity YoY: {_fv(wages.get('prod_yoy'), '.1f', '%')}."
+    ))
+    story.append(_two_charts(
+        wage_productivity_chart(dl, lookback_years=10),
+        labor_deterioration_chart(lae, lookback_years=10),
+        small=True,
+    ))
+
+    # ── Participation & Industrial Production ─────────────────────────
+    story.append(_subsection("Employment Structure & Industrial Activity"))
+    story.append(_two_charts(
         multi_line_chart(dl,
             [("EMRATIO", C["blue"]), ("CIVPART", C["teal"])],
-            title="Employment-Population Ratio vs. Participation Rate %",
-            lookback_years=30),
-    ))
-    story.append(Spacer(1, 0.08 * inch))
-    story.append(_subsection("Initial Claims, Savings Rate & Leading Indicators"))
-    story.append(_prose(
-        "Initial jobless claims (4-week moving average) provide the most timely read on "
-        "labor market health — released weekly with a 4-day lag. The personal saving rate "
-        "tracks household buffer capacity: sustained lows signal stretched balance sheets."
-    ))
-    story.append(_two_charts(
-        area_chart(dl, "ICSA", lookback_years=10,
-                   ma_periods=4,
-                   color=C["amber"], fill_color="rgba(183,121,31,0.09)",
-                   threshold_green=250, threshold_red=350,
-                   title="Initial Jobless Claims — 4-Week MA (Weekly)",
-                   recession_shading=True),
-        area_chart(dl, "PSAVERT", lookback_years=20,
-                   color=C["teal"], fill_color="rgba(44,122,123,0.09)",
-                   threshold_green=7, threshold_red=4,
-                   title="Personal Saving Rate %"),
-    ))
-    story.append(_two_charts(
+            title="Employment-Population Ratio vs. Participation Rate",
+            lookback_years=20),
         area_chart(dl, "INDPRO", yoy=True, lookback_years=20,
                    color=C["blue"], fill_color="rgba(43,108,176,0.10)",
                    threshold_green=1, threshold_red=-1,
                    title="Industrial Production — Year-over-Year %",
                    recession_shading=True),
+    ))
+    story.append(_two_charts(
+        area_chart(dl, "PSAVERT", lookback_years=20,
+                   color=C["teal"], fill_color="rgba(44,122,123,0.09)",
+                   threshold_green=7, threshold_red=4,
+                   title="Personal Saving Rate %"),
         area_chart(dl, "USSLIND", lookback_years=10,
                    color=C["red"], fill_color="rgba(155,44,44,0.09)",
                    threshold_green=0, threshold_red=-5,
@@ -744,7 +1582,7 @@ def _build_labor(story, dl):
     story.append(_prose(
         "Industrial production YoY contraction has coincided with every U.S. recession since 1960. "
         "The Conference Board LEI aggregates 10 forward-looking components; three consecutive "
-        "monthly declines have preceded every NBER recession with a 6-12 month lead."
+        "monthly declines have preceded every NBER recession with a 6–12 month lead."
     ))
 
 
@@ -809,10 +1647,12 @@ def _build_markets(story, dl):
     ))
     story.append(_prose(
         "CAPE measures structural valuation risk (where valuations are relative to long-run "
-        "earnings); VIX measures near-term sentiment and implied volatility. Historically, "
-        "high-CAPE regimes combined with VIX spikes mark the sharpest drawdown episodes — "
-        "2001, 2008, and 2022. CAPE above 30 with a VIX spike above 30 has preceded "
-        "significant multi-year return headwinds."
+        "earnings); VIX measures near-term sentiment and implied volatility. High CAPE is "
+        "a long-run forward return predictor, not a short-term timing signal — elevated "
+        "readings have coexisted with extended bull markets. Low VIX reflects current market "
+        "calm and can persist. The combination most associated with historical drawdowns is "
+        "high CAPE combined with a VIX spike above 30 (2001, 2008, 2022) — both elevated "
+        "valuations and materialising stress, not valuations alone."
     ))
     story.append(Spacer(1, 0.08 * inch))
     story.append(_full_chart(yield_spread_chart(dl, lookback_years=30, recession_shading=True)))
@@ -1253,6 +2093,33 @@ def _build_credit_markets(story, dl):
         "6-12 months before delinquency rates rise. Net tightening above 40% has preceded "
         "CRE credit contractions in every major stress episode since the 1990 S&L crisis."
     ))
+    story.append(Spacer(1, 0.08 * inch))
+
+    # ── Banking Stress ────────────────────────────────────────────────
+    story.append(_subsection("Banking & Credit Quality"))
+    story.append(_prose(
+        "Loan delinquency rates across all segments provide a lagging but highly reliable "
+        "signal of credit cycle stress. All-loan delinquency (blue) is the broadest gauge; "
+        "CRE (red) is concentrated at regional/community banks; residential mortgages (amber) "
+        "reflect consumer housing balance sheets. Deposit flows show system-wide funding stability."
+    ))
+    print("  Rendering banking stress charts...")
+    story.append(_two_charts(
+        delinquency_chart(dl, lookback_years=20),
+        bank_deposits_chart(dl, lookback_years=10),
+        small=True,
+    ))
+    story.append(_two_charts(
+        fci_composite_chart(dl, lookback_years=15),
+        hy_spread_fci_chart(dl, lookback_years=10),
+        small=True,
+    ))
+    story.append(_prose(
+        "The composite financial conditions comparison (NFCI + STLFSI4) shows when overall "
+        "financial system stress is tightening or loosening. Credit spread overlay with lending "
+        "standards shows the dual tightening channel — market pricing and bank underwriting "
+        "simultaneously contracting."
+    ))
 
 
 def _build_policy_constraints(story, re: RiskEngine, dl):
@@ -1356,6 +2223,12 @@ def _build_toc(story):
         (False, "Markets & Rates",                        "sec_markets"),
         (False, "Housing Market",                         "sec_housing"),
         (False, "Fiscal",                                 "sec_fiscal"),
+        (False, "Leading Indicators & Business Cycle Index", "sec_leading"),
+        (False, "Recession Probability Model",            "sec_recession_prob"),
+        (False, "Risk Taxonomy Scorecard",                "sec_risk_scorecard"),
+        (False, "Global Macro & FX",                     "sec_global_macro"),
+        (False, "Macro Regime Classification",           "sec_regime"),
+        (False, "Fiscal Analytics & Sustainability",     "sec_fiscal_analytics"),
     ]
 
     rows = []
@@ -1638,12 +2511,441 @@ def _build_housing(story, dl):
 
 # ── PDF Builder ───────────────────────────────────────────────────────────────
 
+def _build_leading_indicators(story, lie, re, dl):
+    """Leading Indicators & Business Cycle Index section."""
+    story += _section_rule("Leading Indicators & Business Cycle Index",
+                           anchor_id="sec_leading")
+    print("  Computing BCI and leading signals...")
+
+    bci_val, phase = lie.current_bci()
+    bci_str = f"{bci_val:.2f}" if bci_val is not None else "N/A"
+
+    _phase_colors = {
+        "Expansion":   "#276749",
+        "Slowdown":    "#975a16",
+        "Contraction": "#9b2c2c",
+        "Recovery":    "#2b6cb0",
+        "No Data":     "#718096",
+    }
+    phase_color = _phase_colors.get(phase, "#718096")
+
+    story.append(_prose(
+        "The Composite Business Cycle Index (BCI) aggregates eight leading macro indicators "
+        "into a single standardized score. Each component is z-scored against its 20-year "
+        "calibration window, inverted when lower values are healthier, then combined as a "
+        "weighted average (weights renormalized for missing data) and smoothed with a "
+        "3-month moving average. "
+        f"<b>Current BCI: {bci_str} &mdash; Phase: "
+        f'<font color="{phase_color}">{phase}</font></b>'
+    ))
+    story.append(Spacer(1, 0.06 * inch))
+
+    # BCI time series (left) + component waterfall (right)
+    print("  Rendering BCI charts...")
+    story.append(_two_charts(
+        bci_chart(lie, dl, lookback_years=15),
+        bci_waterfall_chart(lie, dl),
+        small=True,
+    ))
+    story.append(Spacer(1, 0.06 * inch))
+
+    # Phase legend table
+    phase_rows = [
+        ["Expansion",    "#276749", "BCI > 0, momentum positive — above-trend growth accelerating"],
+        ["Slowdown",     "#975a16", "BCI > 0, momentum negative — above-trend but decelerating"],
+        ["Recovery",     "#2b6cb0", "BCI ≤ 0, momentum positive — below-trend but improving"],
+        ["Contraction",  "#9b2c2c", "BCI ≤ 0, momentum negative — below-trend and worsening"],
+    ]
+    phase_tbl_data = [
+        [Paragraph(r[0], _ps("pl", fontName="Helvetica-Bold", fontSize=8,
+                              textColor=colors.HexColor(r[1]))),
+         Paragraph(r[2], ST_SMALL)]
+        for r in phase_rows
+    ]
+    phase_tbl = Table(phase_tbl_data, colWidths=[CONTENT_W * 0.18, CONTENT_W * 0.82])
+    phase_tbl.setStyle(TableStyle([
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
+        ("TOPPADDING",    (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("ROWBACKGROUNDS",(0, 0), (-1, -1),
+         [colors.HexColor("#f7f8fc"), colors.white]),
+    ]))
+    story.append(phase_tbl)
+    story.append(Spacer(1, 0.12 * inch))
+
+    # ── Momentum Analytics table ───────────────────────────────────────────
+    story.append(_subsection("Trend & Momentum Analytics"))
+    story.append(_prose(
+        "Direction is based on the 3-month linear trend: <b>Deteriorating</b> means the "
+        "series is trending toward worse conditions; <b>Improving</b> means improving. "
+        "Z vs 1Y measures how far the current reading departs from its 12-month average "
+        "in standard-deviation units."
+    ))
+
+    mom_data = lie.all_momentum()
+    _mom_hdrs = ["Series", "Current", "3M Trend", "6M Trend", "Accel.", "Z vs 1Y", "Direction"]
+    mom_rows_tbl = [
+        [Paragraph(h, _ps("mh", fontName="Helvetica-Bold", fontSize=8,
+                           textColor=colors.white))
+         for h in _mom_hdrs]
+    ]
+    _dir_colors = {"Improving": "#276749", "Deteriorating": "#9b2c2c"}
+    for sid in BCI_COMPONENTS:
+        m = mom_data.get(sid, {})
+        if not m:
+            continue
+        meta = REGISTRY.get(sid, {})
+        direction = m.get("direction", "—")
+        dc = _dir_colors.get(direction, "#718096")
+        mom_rows_tbl.append([
+            Paragraph(meta.get("short_name", sid), ST_SMALL),
+            Paragraph(f"{m.get('current', 0):.2f}",        ST_SMALL),
+            Paragraph(f"{m.get('trend_3m', 0):+.3f}",      ST_SMALL),
+            Paragraph(f"{m.get('trend_6m', 0):+.3f}",      ST_SMALL),
+            Paragraph(f"{m.get('acceleration', 0):+.3f}",  ST_SMALL),
+            Paragraph(f"{m.get('z_vs_1y', 0):+.2f}σ", ST_SMALL),
+            Paragraph(f'<font color="{dc}"><b>{direction}</b></font>', ST_SMALL),
+        ])
+
+    if len(mom_rows_tbl) > 1:
+        mom_col_ws = [CONTENT_W * w for w in (0.18, 0.10, 0.12, 0.12, 0.10, 0.12, 0.26)]
+        mom_tbl = Table(mom_rows_tbl, colWidths=mom_col_ws)
+        mom_tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, 0), HDR_BG),
+            ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE",      (0, 0), (-1, 0), 8),
+            ("TOPPADDING",    (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+            ("ROWBACKGROUNDS",(0, 1), (-1, -1),
+             [colors.white, colors.HexColor("#f7f8fc")]),
+            ("GRID",          (0, 0), (-1, -1), 0.3, RULE_CLR),
+        ]))
+        story.append(mom_tbl)
+    story.append(Spacer(1, 0.10 * inch))
+
+    # ── Momentum charts for four key series ───────────────────────────────
+    story.append(_subsection("Indicator Trend Details"))
+    story.append(_prose(
+        "Top panel: indicator level (faint) with 3-month (solid blue) and 6-month "
+        "(dashed teal) rolling averages. Bottom panel: 3-month rate of change — "
+        "green bars indicate improving momentum, red bars indicate deterioration."
+    ))
+    print("  Rendering momentum charts...")
+    story.append(_two_charts(
+        momentum_chart(dl, "USSLIND",      lookback_years=8),
+        momentum_chart(dl, "BAMLH0A0HYM2", lookback_years=8),
+        small=True,
+    ))
+    story.append(_two_charts(
+        momentum_chart(dl, "T10Y2Y",    lookback_years=8),
+        momentum_chart(dl, "ICSA",      lookback_years=8),
+        small=True,
+    ))
+    story.append(_two_charts(
+        momentum_chart(dl, "PERMIT",    lookback_years=8),
+        momentum_chart(dl, "TEMPHELPS", lookback_years=8),
+        small=True,
+    ))
+    story.append(Spacer(1, 0.10 * inch))
+
+    # ── Historical backtest signal charts ──────────────────────────────────
+    story.append(_subsection("Historical Signal Overlay Charts"))
+    story.append(_prose(
+        "Each chart shows the indicator series with NBER recession shading (grey), "
+        "the signal threshold (dashed amber line at the 75th or 25th percentile of "
+        "the full history), and orange dots marking where the signal fired. "
+        "Visual validation of hit rates and false-positive rates."
+    ))
+    print("  Rendering backtest signal charts...")
+    story.append(_two_charts(
+        backtest_signal_chart(lie, dl, "USSLIND",      lookback_years=20),
+        backtest_signal_chart(lie, dl, "ICSA",         lookback_years=20),
+        small=True,
+    ))
+    story.append(_two_charts(
+        backtest_signal_chart(lie, dl, "BAMLH0A0HYM2", lookback_years=20),
+        backtest_signal_chart(lie, dl, "T10Y2Y",       lookback_years=20),
+        small=True,
+    ))
+    story.append(Spacer(1, 0.10 * inch))
+
+    # ── Recession backtest table ───────────────────────────────────────────
+    story.append(_subsection("Historical Recession Validation"))
+    story.append(_prose(
+        "Hit rate: percentage of NBER recessions (within the indicator's data history) "
+        "preceded by a stressed signal — series above the 75th percentile (higher_is_bad=True) "
+        "or below the 25th percentile (higher_is_bad=False) — within 18 months before the "
+        "recession start. Lead time: average months of first advance warning (first signal in "
+        "the window). False positive rate: percentage of signal episodes not followed by a "
+        "recession within 24 months. Only recessions within each indicator's data history are "
+        "evaluated; indicators with insufficient history are omitted."
+    ))
+
+    bt_data = lie.all_backtests()
+    _bt_hdrs = ["Series", "Hit Rate", "Avg Lead (Mo.)", "False Pos. Rate", "Recessions"]
+    bt_rows_tbl = [
+        [Paragraph(h, _ps("bh", fontName="Helvetica-Bold", fontSize=8,
+                           textColor=colors.white))
+         for h in _bt_hdrs]
+    ]
+    for sid in BCI_COMPONENTS:
+        bt = bt_data.get(sid, {})
+        if not bt or bt.get("n_recessions", 0) == 0:
+            continue
+        meta = REGISTRY.get(sid, {})
+        hit  = bt.get("hit_rate")
+        lead = bt.get("avg_lead_months")
+        fp   = bt.get("false_pos_rate")
+        bt_rows_tbl.append([
+            Paragraph(meta.get("short_name", sid), ST_SMALL),
+            Paragraph(f"{hit:.0f}%"  if hit  is not None else "N/A", ST_SMALL),
+            Paragraph(f"{lead:.1f}"  if lead is not None else "N/A", ST_SMALL),
+            Paragraph(f"{fp:.0f}%"   if fp   is not None else "N/A", ST_SMALL),
+            Paragraph(str(bt.get("n_recessions", 0)), ST_SMALL),
+        ])
+
+    if len(bt_rows_tbl) > 1:
+        bt_col_ws = [CONTENT_W * w for w in (0.28, 0.16, 0.20, 0.22, 0.14)]
+        bt_tbl = Table(bt_rows_tbl, colWidths=bt_col_ws)
+        bt_tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, 0), HDR_BG),
+            ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE",      (0, 0), (-1, 0), 8),
+            ("TOPPADDING",    (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+            ("ROWBACKGROUNDS",(0, 1), (-1, -1),
+             [colors.white, colors.HexColor("#f7f8fc")]),
+            ("GRID",          (0, 0), (-1, -1), 0.3, RULE_CLR),
+        ]))
+        story.append(bt_tbl)
+
+    story.append(_prose(
+        "<i>Note: Statistics reflect in-sample backtesting against NBER post-hoc recession "
+        "dating and are limited to recessions within each indicator's available data history. "
+        "ICE BofA HY/IG spread series (BAMLH0A0HYM2) are omitted because FRED's API "
+        "returns only ~2 years of history due to licensing restrictions — insufficient for "
+        "meaningful backtest evaluation. Initial jobless claims (ICSA) is a coincident "
+        "indicator and not expected to signal recessions 18 months in advance. "
+        "Data revisions may introduce mild lookahead bias. These figures should inform, "
+        "not replace, judgement.</i>"
+    ))
+
+
+def _build_recession_probability(story, rpe: RecessionProbabilityEngine, dl):
+    """Probabilistic Macro Forecasting section."""
+    story += _section_rule("Recession Probability Model", anchor_id="sec_recession_prob")
+
+    probs = rpe.current_probabilities()
+
+    def _pct(h):
+        v = probs.get(h)
+        return f"{v * 100:.1f}%" if v is not None else "N/A"
+
+    def _level(h):
+        v = probs.get(h)
+        if v is None:
+            return ("N/A", "#718096")
+        if v >= 0.50:
+            return ("High", "#9b2c2c")
+        if v >= 0.20:
+            return ("Elevated", "#975a16")
+        return ("Low", "#276749")
+
+    # Probability badges prose
+    badge_parts = []
+    for h in RPE_HORIZONS:
+        lbl, clr = _level(h)
+        badge_parts.append(
+            f'<b>{h}M:</b> <font color="{clr}"><b>{_pct(h)} ({lbl})</b></font>'
+        )
+    story.append(_prose("  &nbsp;&nbsp;".join(badge_parts)))
+    story.append(Spacer(1, 0.06 * inch))
+
+    story.append(_prose(
+        "Recession probabilities are estimated by a pure-numpy logistic regression model "
+        "trained on NBER recession dates using eight macro features: yield curve (2Y and 3M "
+        "spreads), Conference Board LEI (YoY), initial jobless claims (log, 4-week MA), ISM "
+        "manufacturing new orders, high-yield credit spreads, unemployment rate change, and "
+        "payroll growth. Separate models are trained per horizon (6M, 12M, 24M) with L2 "
+        "regularisation. A 35% probability threshold is used for recession signal flags."
+    ))
+    story.append(Spacer(1, 0.08 * inch))
+
+    # Gauge chart (3 side-by-side indicators)
+    print("  Rendering recession probability gauges...")
+    story.append(_full_chart(recession_gauge_chart(probs)))
+    story.append(Spacer(1, 0.08 * inch))
+
+    # Rolling probability chart + signal decomposition side-by-side
+    print("  Rendering rolling probability and decomposition charts...")
+    story.append(_two_charts(
+        recession_probability_chart(rpe, dl, lookback_years=20, with_bands=False),
+        signal_decomposition_chart(rpe, horizon=12),
+        small=False,
+    ))
+    story.append(Spacer(1, 0.10 * inch))
+
+    # Out-of-sample backtest table
+    story.append(_subsection("Out-of-Sample Backtest Performance"))
+    story.append(_prose(
+        "Rolling out-of-sample backtest: the model is re-trained each month using only "
+        "data available at that time (20-year window), then tested one step ahead. "
+        "Precision = fraction of high-probability signals followed by a recession. "
+        "Recall = fraction of recessions preceded by a high-probability signal. "
+        "Hit rate = recessions with at least one signal fired within the horizon."
+    ))
+
+    try:
+        all_bt = rpe.all_backtests()
+    except Exception:
+        all_bt = {}
+
+    _bt_hdrs = ["Horizon", "Precision", "Recall", "Hit Rate", "False Pos. Rate", "Obs."]
+    bt_rows = [
+        [Paragraph(h, _ps("bh", fontName="Helvetica-Bold", fontSize=8,
+                           textColor=colors.white))
+         for h in _bt_hdrs]
+    ]
+    for h in RPE_HORIZONS:
+        bt = all_bt.get(h, {})
+        p   = bt.get("precision")
+        r   = bt.get("recall")
+        hr  = bt.get("hit_rate")
+        fp  = bt.get("false_pos_rate")
+        obs = bt.get("n_obs", 0)
+        bt_rows.append([
+            Paragraph(f"{h}M",             ST_SMALL),
+            Paragraph(f"{p*100:.0f}%"  if p  is not None else "N/A", ST_SMALL),
+            Paragraph(f"{r*100:.0f}%"  if r  is not None else "N/A", ST_SMALL),
+            Paragraph(f"{hr*100:.0f}%" if hr is not None else "N/A", ST_SMALL),
+            Paragraph(f"{fp*100:.0f}%" if fp is not None else "N/A", ST_SMALL),
+            Paragraph(str(obs),            ST_SMALL),
+        ])
+
+    if len(bt_rows) > 1:
+        bt_col_ws = [CONTENT_W * w for w in (0.12, 0.16, 0.16, 0.16, 0.22, 0.18)]
+        bt_tbl = Table(bt_rows, colWidths=bt_col_ws)
+        bt_tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, 0), HDR_BG),
+            ("TOPPADDING",    (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+            ("ROWBACKGROUNDS",(0, 1), (-1, -1),
+             [colors.white, colors.HexColor("#f7f8fc")]),
+            ("GRID",          (0, 0), (-1, -1), 0.3, RULE_CLR),
+        ]))
+        story.append(bt_tbl)
+        story.append(Spacer(1, 0.06 * inch))
+
+    story.append(_prose(
+        "<i>Note: Logistic regression is a baseline model. It captures linear relationships "
+        "between macro features and recession risk but does not account for structural breaks, "
+        "policy regime changes, or non-linear interactions. Probabilities should be interpreted "
+        "as a signal of elevated risk, not a precise forecast.</i>"
+    ))
+
+
+def _build_risk_scorecard(story, re: RiskEngine, dl):
+    """Risk Taxonomy Scorecard section — four clean categories."""
+    story += _section_rule("Risk Taxonomy Scorecard", anchor_id="sec_risk_scorecard")
+
+    story.append(_prose(
+        "Risk is organised into four conceptually distinct categories that can decouple "
+        "from each other during different macro regimes. Mixing them produces misleading "
+        "aggregate scores — a benign credit environment can mask cyclical deterioration, "
+        "and fiscal imbalances can persist for years before affecting near-term growth."
+    ))
+    story.append(Spacer(1, 0.08 * inch))
+
+    taxonomy = re.risk_taxonomy()
+    # taxonomy keys: "Cyclical Recession Risk", "Financial Stability Risk",
+    #                "Valuation & Sentiment Risk", "Fiscal & Policy Risk"
+    # each value: {"score": str, "components": [(name, risk_level, display_val, as_of), ...],
+    #              "description": str}
+
+    _risk_colors = {
+        "green":   "#276749",
+        "yellow":  "#975a16",
+        "red":     "#9b2c2c",
+        "neutral": "#718096",
+    }
+
+    for cat_label, cat_data in taxonomy.items():
+        overall_score = cat_data.get("score", "neutral")
+        description   = cat_data.get("description", "")
+        components    = cat_data.get("components", [])
+
+        score_clr = _risk_colors.get(overall_score, "#718096")
+        story.append(_subsection(
+            f'{cat_label}  — '
+            f'<font color="{score_clr}"><b>{overall_score.title()}</b></font>'
+        ))
+        story.append(_prose(description))
+        story.append(Spacer(1, 0.04 * inch))
+
+        if not components:
+            story.append(_prose("<i>No data available for this category.</i>"))
+            story.append(Spacer(1, 0.06 * inch))
+            continue
+
+        # Each component: (name, risk_level, display_value, as_of)
+        _row_hdrs = ["Indicator", "Current Value", "As Of", "Risk Level"]
+        tbl_rows = [
+            [Paragraph(h, _ps("ch", fontName="Helvetica-Bold", fontSize=8,
+                               textColor=colors.white))
+             for h in _row_hdrs]
+        ]
+        for (name, level, display_val, as_of) in components:
+            clr = _risk_colors.get(level, "#718096")
+            tbl_rows.append([
+                Paragraph(str(name)[:50],      ST_SMALL),
+                Paragraph(str(display_val),    ST_SMALL),
+                Paragraph(str(as_of),          ST_SMALL),
+                Paragraph(f'<font color="{clr}"><b>{level.title()}</b></font>', ST_SMALL),
+            ])
+
+        if len(tbl_rows) > 1:
+            col_ws = [CONTENT_W * w for w in (0.38, 0.20, 0.22, 0.20)]
+            cat_tbl = Table(tbl_rows, colWidths=col_ws)
+            cat_tbl.setStyle(TableStyle([
+                ("BACKGROUND",    (0, 0), (-1, 0), HDR_BG),
+                ("TOPPADDING",    (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+                ("ROWBACKGROUNDS",(0, 1), (-1, -1),
+                 [colors.white, colors.HexColor("#f7f8fc")]),
+                ("GRID",          (0, 0), (-1, -1), 0.3, RULE_CLR),
+            ]))
+            story.append(cat_tbl)
+        story.append(Spacer(1, 0.10 * inch))
+
+    story.append(_prose(
+        "<i>Risk levels are assigned by threshold or percentile rules defined per series in "
+        "series_registry.py. Green = below alert threshold; Yellow = moderate stress; "
+        "Red = high stress. Overall category score is the maximum component risk level.</i>"
+    ))
+
+
 def build_pdf(output_path: str):
     print("Loading data...")
     sql = SQLStorage.from_config()
     dl = DataLoader(sql=sql)
     re = RiskEngine(dl)
+    lie = LeadingIndicatorEngine(dl)
     crisis_dims = re.crisis_dimensions()
+    print("Training recession probability model...")
+    rpe = RecessionProbabilityEngine(dl)
+    rpe.train()
+    lae = LaborAnalyticsEngine(dl)
+    iae = InflationAnalysisEngine(dl)
+    gme = GlobalMacroEngine(dl)
+    rge = RegimeEngine(dl)
+    sme = StructuralMacroEngine(dl)
+    fae = FiscalAnalyticsEngine(dl)
 
     print(f"Loaded {len(dl.available)} series.")
 
@@ -1677,11 +2979,11 @@ def build_pdf(output_path: str):
     story.append(PageBreak())
 
     print("Building Inflation & Money Supply section...")
-    _build_inflation(story, dl)
+    _build_inflation(story, iae, dl)
     story.append(PageBreak())
 
     print("Building Labor Market section...")
-    _build_labor(story, dl)
+    _build_labor(story, lae, dl)
     story.append(PageBreak())
 
     print("Building Markets & Rates section...")
@@ -1694,6 +2996,34 @@ def build_pdf(output_path: str):
 
     print("Building Fiscal section...")
     _build_fiscal(story, dl)
+    story.append(PageBreak())
+
+    print("Building Leading Indicators & BCI section...")
+    _build_leading_indicators(story, lie, re, dl)
+    story.append(PageBreak())
+
+    print("Building Recession Probability section...")
+    _build_recession_probability(story, rpe, dl)
+    story.append(PageBreak())
+
+    print("Building Risk Taxonomy Scorecard section...")
+    _build_risk_scorecard(story, re, dl)
+    story.append(PageBreak())
+
+    print("Building Global Macro & FX section...")
+    _build_global_macro(story, gme, rge, sme, dl)
+    story.append(PageBreak())
+
+    print("Building Macro Regime Classification section...")
+    _build_macro_regime(story, rge, dl)
+    story.append(PageBreak())
+
+    print("Building Fiscal Analytics & Sustainability section...")
+    _build_fiscal_analytics(story, fae, dl)
+    story.append(PageBreak())
+
+    print("Building Methodology Appendix...")
+    _build_methodology(story, re, dl)
     story.append(PageBreak())
 
     print("Building Glossary section...")
@@ -1715,7 +3045,7 @@ def build_pdf(output_path: str):
     print("Done.")
 
     print("Uploading to Google Drive...")
-    #GoogleAPIUploadFile(output_path)
+    GoogleAPIUploadFile(output_path)
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────

@@ -67,9 +67,18 @@ SERIES = [
     ("T10Y2Y",           "yield_curve_spread.csv",       "10-Year minus 2-Year Treasury Yield Spread"),
     # ── Bank Lending Standards ────────────────────────────────────────────
     ("DRTSCILM",         "bank_lending_standards.csv",   "Net % Banks Tightening C&I Loan Standards (Large & Medium Firms)"),
-    # ── Leading Indicators ────────────────────────────────────────────────────
+    # ── Leading Indicators & BCI Components ──────────────────────────────────────
     ("USSLIND",          "leading_economic_index.csv",   "Conference Board Leading Economic Index (MoM % Change)"),
-    # ── Recession Probability ─────────────────────────────────────────────
+    ("PERMIT",           "building_permits.csv",         "New Privately-Owned Housing Units Authorized (SAAR, Thousands)"),
+    ("AMTMNO",           "mfg_new_orders.csv",           "Manufacturers' New Orders: Total Manufacturing (Millions $, Monthly SA)"),
+    ("AWHAETP",          "avg_weekly_hours.csv",         "Average Weekly Hours of All Employees: Total Private (SA)"),
+    ("TEMPHELPS",        "temp_employment.csv",          "All Employees: Professional/Business Services: Temporary Help Services"),
+    ("T10Y3M",           "yield_spread_10y3m.csv",       "10-Year Treasury Constant Maturity Minus 3-Month Treasury Constant Maturity"),
+    # ── Recession Probability Model Features ─────────────────────────────
+    ("CFNAI",            "cfnai_activity.csv",           "Chicago Fed National Activity Index (monthly composite, 1967-present)"),
+    ("BAA10Y",           "baa_10y_spread.csv",           "Moody's Baa Corporate Bond Yield Relative to Yield on 10-Year Treasury Note"),
+    # ── Corporate Profitability (NIPA) ────────────────────────────────────
+    ("CP",               "corporate_profits.csv",        "Corporate Profits with IVA and CCAdj (Quarterly SAAR, $B, NIPA Table 1.12)"),
     ("RECPROUSM156N",    "recession_probability.csv",    "NY Fed Recession Probability: 12-Month Ahead"),
     # ── Housing ───────────────────────────────────────────────────────────
     ("MORTGAGE30US",     "mortgage_rate_30y.csv",        "30-Year Fixed Rate Mortgage Average"),
@@ -77,6 +86,47 @@ SERIES = [
     ("CSUSHPINSA",       "case_shiller_hpi.csv",         "S&P/Case-Shiller U.S. National Home Price Index"),
     # ── Dollar ────────────────────────────────────────────────────────────
     ("DTWEXBGS",         "dollar_index.csv",             "Nominal Broad U.S. Dollar Index (Trade Weighted, Goods)"),
+    # ── Extended Labor Market ─────────────────────────────────────────────
+    ("CES0500000003",    "avg_hourly_earnings.csv",      "Average Hourly Earnings of All Employees: Total Private"),
+    ("ECIALLCIV",        "eci_all_civilian.csv",         "Employment Cost Index: Total Compensation, All Civilian Workers (Quarterly SA)"),
+    ("JTSJOL",           "jolts_openings.csv",           "Job Openings: Total Nonfarm (JOLTS)"),
+    ("JTSQUR",           "jolts_quits_rate.csv",         "Quits Rate: Total Nonfarm (JOLTS)"),
+    ("JTSLDR",           "jolts_layoffs_rate.csv",       "Layoffs and Discharges Rate: Total Nonfarm (JOLTS)"),
+    ("U6RATE",           "u6_unemployment.csv",          "U-6 Total Unemployed Plus All Marginally Attached Plus Part-Time for Economic Reasons"),
+    ("CCSA",             "continued_claims.csv",         "Continued Claims (Insured Unemployment)"),
+    ("OPHNFB",           "nonfarm_productivity.csv",     "Nonfarm Business Sector: Real Output Per Hour of All Persons"),
+    ("ULCNFB",           "unit_labor_costs.csv",         "Nonfarm Business Sector: Unit Labor Costs"),
+    # ── Extended Inflation ────────────────────────────────────────────────
+    ("MEDCPIM158SFRBCLE",    "median_cpi.csv",           "Median CPI (12-Month Percent Change, Cleveland Fed)"),
+    ("PCETRIM12M159SFRBDAL", "trimmed_mean_pce.csv",     "Trimmed Mean PCE Inflation Rate, 12-Month (Dallas Fed)"),
+    ("CPILFENS",             "cpi_supercore.csv",        "CPI: All Items Less Food, Energy, and Shelter (Supercore)"),
+    ("CUSR0000SEHC",         "cpi_oer.csv",              "CPI: Owners' Equivalent Rent of Residences"),
+    ("MICH",                 "mich_inflation_exp.csv",   "University of Michigan: Inflation Expectation (1-Year Ahead)"),
+    ("CORESTICKM159SFRBATL", "sticky_cpi.csv",           "Sticky Price CPI Less Food and Energy (12-Month % Change, Atlanta Fed)"),
+    # ── Banking & Credit Stress ───────────────────────────────────────────
+    ("DRALACBN",         "delinquency_all_loans.csv",    "Delinquency Rate on All Loans and Leases, All Commercial Banks"),
+    ("DRCLACBS",         "delinquency_cre.csv",          "Delinquency Rate on Commercial Real Estate Loans, All Commercial Banks"),
+    ("DRSFRMACBS",       "delinquency_mortgage.csv",     "Delinquency Rate on Single-Family Residential Mortgages, All Commercial Banks"),
+    ("DPSACBM027SBOG",   "bank_deposits.csv",            "Deposits, All Commercial Banks (Monthly, Seasonally Adjusted)"),
+    # ── Global Macro — Commodities ────────────────────────────────────────
+    ("DCOILBRENTEU",         "brent_crude.csv",          "Crude Oil Prices: Brent - Europe (Dollars per Barrel)"),
+    ("PPIACO",               "ppi_all_commodities.csv",  "Producer Price Index by Commodity: All Commodities"),
+    # Gold (LBMA AM/PM fix series discontinued on FRED — engine degrades gracefully)
+    # ── Global Macro — FX ────────────────────────────────────────────────
+    ("DEXUSEU",              "fx_eur_usd.csv",           "U.S. / Euro Foreign Exchange Rate (USD per EUR, Daily)"),
+    ("DEXJPUS",              "fx_jpy_usd.csv",           "Japan / U.S. Foreign Exchange Rate (Yen per USD, Daily)"),
+    ("DEXCHUS",              "fx_cny_usd.csv",           "China / U.S. Foreign Exchange Rate (Yuan per USD, Daily)"),
+    # ── Global Macro — Central Bank Rates (OECD) ─────────────────────────
+    ("IR3TIB01EZM156N",      "ecb_policy_rate.csv",      "3-Month Interbank Rate: Euro Area (Monthly, OECD) — ECB Rate Proxy"),
+    ("IRSTCB01JPM156N",      "boj_policy_rate.csv",      "BOJ: Immediate Rates: Less than 24 Hours: Central Bank Rates (Japan, Monthly)"),
+    # ── Structural Macro ─────────────────────────────────────────────────
+    ("GDPC1",                "real_gdp.csv",             "Real Gross Domestic Product (Billions of Chained 2017 Dollars, Quarterly SAAR)"),
+    ("GDPPOT",               "potential_gdp.csv",        "Real Potential Gross Domestic Product (Billions of Chained 2017 Dollars, Quarterly, CBO)"),
+    ("LFWA64TTUSM647S",      "working_age_population.csv","Working Age Population: Aged 15-64: All Persons for the United States (Monthly, Thousands)"),
+    ("DFII10",               "tips_10y_yield.csv",       "10-Year Treasury Inflation-Indexed Security, Constant Maturity (Daily, %)"),
+    # ── Fiscal Analytics ─────────────────────────────────────────────────
+    ("FYFSD",                "federal_surplus_deficit.csv","Federal Surplus or Deficit [-] (Annual FY, Billions of Dollars)"),
+    ("FYFSGDA188S",          "federal_surplus_deficit_pct_gdp.csv","Federal Surplus or Deficit [-] as Percent of GDP (Annual, BEA NIPA)"),
 ]
 
 
